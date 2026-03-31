@@ -39,4 +39,4 @@ pnpm exec office-bridge mcp-serve
 
 - The add-in forces bridge mode on by default.
 - The current capability set is intentionally small: live observation plus privileged raw Office.js execution.
-- Icon assets are minimal placeholders for local sideloading and manifest validation.
+- The add-in now uses the selected protocol-node icon set in `packages/word-addin/public/assets/`.

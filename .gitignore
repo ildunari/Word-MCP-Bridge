@@ -7,4 +7,3 @@ dist
 coverage
 *.tsbuildinfo
 packages/word-addin/.vite
-packages/word-addin/public
