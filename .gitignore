@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+.cursor
+.claude
+.pnpm-store
+coverage
+*.tsbuildinfo
+packages/word-addin/.vite
+packages/word-addin/public
