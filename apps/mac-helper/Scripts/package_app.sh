@@ -8,11 +8,12 @@ BUILD_DIR="$APP_DIR/.build/release"
 OUTPUT_DIR="$REPO_ROOT/release/mac-helper"
 APP_NAME="Word MCP Bridge Helper.app"
 APP_BUNDLE="$OUTPUT_DIR/$APP_NAME"
+SETUP_DIR="$APP_BUNDLE/Contents/Resources/setup"
 
 swift build --configuration release --package-path "$APP_DIR"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$SETUP_DIR"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,5 +45,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 PLIST
 
 cp "$BUILD_DIR/WordMCPBridgeHelper" "$APP_BUNDLE/Contents/MacOS/WordMCPBridgeHelper"
+cp "$REPO_ROOT/apps/mac-helper/SETUP-GUIDE.md" "$SETUP_DIR/SETUP-GUIDE.md"
+cp "$REPO_ROOT/packages/word-addin/manifest.prod.xml" "$SETUP_DIR/manifest.prod.xml"
+cp "$REPO_ROOT/packages/word-addin/manifest.xml" "$SETUP_DIR/manifest.xml"
 
 echo "Packaged helper app at: $APP_BUNDLE"

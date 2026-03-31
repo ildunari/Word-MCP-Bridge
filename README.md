@@ -18,9 +18,71 @@ The full chat side panel and old SDK/core runtime stack are intentionally out of
 - CLI inspection: `office-bridge list`, `summary`, `snapshot`, `events`, `watch-selection`
 - Word add-in: local manifest and hosted manifest
 
+## Best user flow
+
+The intended user flow is:
+
+1. Install the Word add-in once with the hosted manifest.
+2. Put `Word MCP Bridge Helper.app` in `/Applications`.
+3. Optionally enable `Launch helper at login` in the helper settings.
+4. For normal use, open the helper, open Word, and open the `Word MCP Bridge` taskpane.
+
+The helper app now includes:
+
+- a first-run setup window
+- a hosted-first install path
+- quick actions for Word, manifests, docs, and MCP config
+- optional bridge health notifications
+- startup preferences for launch-at-login and auto-start bridge
+
+## One-time install
+
+### 1. Install the helper app
+
+Build and package everything:
+
+```bash
+pnpm release:bundle
+```
+
+That produces:
+
+- `release/word-addin-bundle/`
+- `release/word-addin-bundle.zip`
+- `release/mac-helper/Word MCP Bridge Helper.app`
+
+Copy the helper app into `/Applications` and open it.
+
+### 2. Install the Word add-in once
+
+Use the helper app's `Getting Started` flow and choose the hosted install path.
+
+That flow will:
+
+- reveal the hosted manifest
+- open Word
+- tell you the exact next step inside Word
+- let you verify when the taskpane has connected back to the bridge
+
+If you want to do it manually, use:
+
+- hosted manifest: `packages/word-addin/manifest.prod.xml`
+- local dev manifest: `packages/word-addin/manifest.xml`
+
+## Daily workflow
+
+After the one-time install:
+
+1. Open `Word MCP Bridge Helper.app`.
+2. Open Word.
+3. Open the `Word MCP Bridge` taskpane in Word.
+4. Use your MCP-capable host.
+
+If you enabled `Launch helper at login` and `Auto-start bridge when helper opens`, the helper should handle most of the local bridge setup automatically.
+
 ## Local developer install
 
-Use this mode when you are running everything from the repo on your machine.
+Use this mode when you are running everything from the repo on your machine and want the local manifest + dev server path.
 
 ```bash
 pnpm install
@@ -45,11 +107,11 @@ pnpm helper:run
 
 ## Hosted add-in mode
 
-Use this mode when the add-in UI is already hosted and you mainly want to run the local bridge and MCP server.
+Use this mode when the add-in UI is already hosted and you mainly want to run the local bridge and MCP server on the user machine.
 
 1. Deploy `packages/word-addin/dist` to your static host.
 2. Use `packages/word-addin/manifest.prod.xml` as the production manifest.
-3. Sideload or distribute that manifest to Word users.
+3. Install that manifest in Word once.
 4. Have each user run the local bridge server on their machine:
 
 ```bash
@@ -69,36 +131,19 @@ See [`packages/bridge/README.md`](packages/bridge/README.md) for copy-paste setu
 - Codex CLI
 - generic stdio MCP hosts
 
-## Word add-in bundle
-
-Build and package the distributable add-in bundle:
-
-```bash
-pnpm release:bundle
-```
-
-That produces:
-
-- `release/word-addin-bundle/`
-- `release/word-addin-bundle.zip`
-- `release/mac-helper/Word MCP Bridge Helper.app`
-
-The bundle contains:
-
-- `manifest.xml`
-- `manifest.prod.xml`
-- the built `dist/` taskpane assets
-- the native macOS helper app bundle
-
 ## macOS helper app
 
-The helper app is a lightweight menu bar controller for local development and distribution demos. It can:
+The helper app is now the main setup and operations surface. It can:
 
 - poll `https://127.0.0.1:4017/status`
 - start the local bridge with `pnpm bridge:serve`
 - stop the local bridge through the bridge shutdown endpoint
 - show live totals for sessions, tool calls, errors, drops, and pending requests
+- open Word, manifests, and setup docs
 - copy a ready-to-paste MCP config block
+- guide first-run installation
+- optionally launch at login and auto-start the bridge
+- optionally notify when Word disconnects or reconnects
 
 Build or run it directly from the repo:
 
@@ -108,7 +153,7 @@ pnpm helper:run
 pnpm package:helper
 ```
 
-The packaged `.app` assumes it can still find this repo checkout, or that `WORD_MCP_BRIDGE_REPO_ROOT` points at one.
+The packaged `.app` can use bundled setup assets for hosted installation. When running from the repo, it can still fall back to repo-local manifests and docs.
 
 ## Repo-local skills
 

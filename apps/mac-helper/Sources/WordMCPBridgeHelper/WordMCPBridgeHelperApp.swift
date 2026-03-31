@@ -14,6 +14,7 @@ struct WordMCPBridgeHelperApp: App {
                 .frame(width: 340)
                 .onAppear {
                     controller.startMonitoring()
+                    controller.showOnboarding()
                 }
         }
         .menuBarExtraStyle(.window)
@@ -40,6 +41,7 @@ private struct HelperMenuView: View {
             statusBlock
             totalsBlock
             sessionsBlock
+            quickActionsBlock
             actionBlock
         }
         .padding(16)
@@ -74,6 +76,9 @@ private struct HelperMenuView: View {
                     }
                     Button("Open Add-in Folder") {
                         controller.openManifestFolder()
+                    }
+                    Button("Getting Started") {
+                        controller.showOnboarding(force: true)
                     }
                     SettingsLink()
                     Divider()
@@ -180,6 +185,37 @@ private struct HelperMenuView: View {
                 .controlSize(.large)
                 .frame(maxWidth: .infinity)
                 .help("Start the local bridge")
+            }
+        }
+    }
+
+    private var quickActionsBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Quick Actions")
+                .font(.subheadline.weight(.semibold))
+
+            HStack(spacing: 8) {
+                Button("Open Word") {
+                    controller.openWord()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Hosted Manifest") {
+                    controller.openHostedManifest()
+                }
+                .buttonStyle(.bordered)
+            }
+
+            HStack(spacing: 8) {
+                Button("Setup Guide") {
+                    controller.openSetupGuide()
+                }
+                .buttonStyle(.bordered)
+
+                Button("Getting Started") {
+                    controller.showOnboarding(force: true)
+                }
+                .buttonStyle(.bordered)
             }
         }
     }

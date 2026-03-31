@@ -4,6 +4,8 @@ import SwiftUI
 
 enum HelperPreferences {
     static let autoStartBridgeOnLaunchKey = "autoStartBridgeOnLaunch"
+    static let notificationsEnabledKey = "notificationsEnabled"
+    static let hasCompletedOnboardingKey = "hasCompletedOnboarding"
 }
 
 enum LaunchAtLoginManager {
@@ -22,6 +24,7 @@ enum LaunchAtLoginManager {
 
 struct SettingsView: View {
     @AppStorage(HelperPreferences.autoStartBridgeOnLaunchKey) private var autoStartBridgeOnLaunch = true
+    @AppStorage(HelperPreferences.notificationsEnabledKey) private var notificationsEnabled = true
     @State private var launchAtLoginEnabled = LaunchAtLoginManager.isEnabled()
     @State private var launchAtLoginError: String?
 
@@ -35,6 +38,13 @@ struct SettingsView: View {
 
                 Toggle("Auto-start bridge when helper opens", isOn: $autoStartBridgeOnLaunch)
                 Text("When enabled, opening the helper also starts the local bridge automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Notifications") {
+                Toggle("Bridge health notifications", isOn: $notificationsEnabled)
+                Text("Show macOS notifications when Word connects, disconnects, or the bridge stops unexpectedly.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

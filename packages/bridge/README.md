@@ -8,6 +8,13 @@ This package is the operator surface for:
 - exposing the bridge as an MCP stdio server
 - inspecting live Word sessions from the CLI
 
+The expected end-user flow is:
+
+1. Install the Word add-in once in Word.
+2. Open `Word MCP Bridge Helper.app`.
+3. Let the helper start the local bridge.
+4. Let your MCP host run `office-bridge mcp-serve`.
+
 ## Install
 
 ### Global npm install
@@ -54,6 +61,8 @@ The MCP server is only useful when:
 - the bridge server is running
 - the Word add-in taskpane is open
 - the taskpane is connected to the bridge
+
+If you are using the packaged helper app, the helper can now guide the first-run setup and reveal the hosted manifest for the one-time Word install step.
 
 ## Common CLI commands
 

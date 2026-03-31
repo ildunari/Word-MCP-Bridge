@@ -5,6 +5,11 @@ import SwiftUI
 @MainActor
 final class BridgeController: NSObject, ObservableObject {
     @Published private(set) var snapshot: HelperSnapshot?
+    @Published private(set) var setupState = HelperSetupState(
+        bridgeReachable: false,
+        connectedSessionCount: 0,
+        assetAvailability: .unavailable
+    )
     @Published private(set) var isLoading = false
     @Published private(set) var isStarting = false
     @Published private(set) var isStopping = false
@@ -13,6 +18,8 @@ final class BridgeController: NSObject, ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var bridgeProcess: Process?
     private var hasAttemptedAutoStart = false
+    private var previousSnapshot: HelperSnapshot?
+    private var previousBridgeReachable = false
     private lazy var session: URLSession = {
         URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
     }()
@@ -31,7 +38,9 @@ final class BridgeController: NSObject, ObservableObject {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             guard let self else { return }
+            self.updateSetupState()
             self.autoStartBridgeIfNeeded()
+            await self.requestNotificationsIfNeeded()
             while !Task.isCancelled {
                 await self.refresh()
                 try? await Task.sleep(for: .seconds(3))
@@ -46,11 +55,17 @@ final class BridgeController: NSObject, ObservableObject {
 
         do {
             let response: BridgeServerStatusResponse = try await requestJSON(path: "/status")
+            previousSnapshot = snapshot
             snapshot = HelperSnapshot(fetchedAt: Date(), status: response.status)
             lastError = nil
+            updateSetupState()
+            maybeNotifyOnStateTransition()
         } catch {
+            previousSnapshot = snapshot
             snapshot = nil
             lastError = error.localizedDescription
+            updateSetupState()
+            maybeNotifyOnStateTransition()
         }
     }
 
@@ -123,7 +138,7 @@ final class BridgeController: NSObject, ObservableObject {
           "mcpServers": {
             "word-mcp-bridge": {
               "command": "npx",
-              "args": ["-y", "@word-mcp-bridge/bridge", "mcp-serve"]
+              "args": ["-y", "@word-mcp-bridge/bridge", "mcp-serve", "--url", "https://localhost:4017"]
             }
           }
         }
@@ -133,13 +148,68 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     func openRepoReadme() {
+        if let setupGuideURL = resolvedAssetAvailability().setupGuideURL {
+            NSWorkspace.shared.open(setupGuideURL)
+            return
+        }
         guard let repoRoot = resolveRepoRoot() else { return }
         NSWorkspace.shared.open(repoRoot.appending(path: "README.md"))
     }
 
     func openManifestFolder() {
+        if let hostedManifestURL = resolvedAssetAvailability().hostedManifestURL {
+            NSWorkspace.shared.activateFileViewerSelecting([hostedManifestURL])
+            return
+        }
         guard let repoRoot = resolveRepoRoot() else { return }
         NSWorkspace.shared.open(repoRoot.appending(path: "packages/word-addin"))
+    }
+
+    func openWord() {
+        if let wordURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.Word") {
+            NSWorkspace.shared.openApplication(at: wordURL, configuration: NSWorkspace.OpenConfiguration())
+            return
+        }
+        lastError = "Microsoft Word is not installed or could not be found."
+    }
+
+    func openHostedManifest() {
+        guard let hostedManifestURL = resolvedAssetAvailability().hostedManifestURL else {
+            lastError = "The hosted manifest is not available in the app bundle or repo."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([hostedManifestURL])
+    }
+
+    func openLocalManifest() {
+        guard let localManifestURL = resolvedAssetAvailability().localManifestURL else {
+            lastError = "The local dev manifest is not available in the app bundle or repo."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([localManifestURL])
+    }
+
+    func openSetupGuide() {
+        guard let setupGuideURL = resolvedAssetAvailability().setupGuideURL else {
+            lastError = "The setup guide is not available in the app bundle or repo."
+            return
+        }
+        NSWorkspace.shared.open(setupGuideURL)
+    }
+
+    func showOnboarding(force: Bool = false) {
+        if force || !UserDefaults.standard.bool(forKey: HelperPreferences.hasCompletedOnboardingKey) {
+            OnboardingWindowManager.shared.show(controller: self)
+        }
+    }
+
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: HelperPreferences.hasCompletedOnboardingKey)
+    }
+
+    func resetOnboarding() {
+        UserDefaults.standard.set(false, forKey: HelperPreferences.hasCompletedOnboardingKey)
+        showOnboarding(force: true)
     }
 
     private func requestJSON<T: Decodable>(path: String) async throws -> T {
@@ -182,6 +252,93 @@ final class BridgeController: NSObject, ObservableObject {
         }
         guard !isBridgeRunning, bridgeProcess?.isRunning != true else { return }
         startBridge()
+    }
+
+    private func resolvedAssetAvailability() -> HelperAssetAvailability {
+        HelperAssetAvailability(
+            hostedManifestURL: resolvedAssetURL(
+                bundledPath: "setup/manifest.prod.xml",
+                repoRelativePath: "packages/word-addin/manifest.prod.xml"
+            ),
+            localManifestURL: resolvedAssetURL(
+                bundledPath: "setup/manifest.xml",
+                repoRelativePath: "packages/word-addin/manifest.xml"
+            ),
+            setupGuideURL: resolvedAssetURL(
+                bundledPath: "setup/SETUP-GUIDE.md",
+                repoRelativePath: "apps/mac-helper/SETUP-GUIDE.md"
+            )
+        )
+    }
+
+    private func resolvedAssetURL(bundledPath: String, repoRelativePath: String) -> URL? {
+        if let resourceURL = Bundle.main.resourceURL?.appending(path: bundledPath),
+           FileManager.default.fileExists(atPath: resourceURL.path()) {
+            return resourceURL
+        }
+
+        if let repoRoot = resolveRepoRoot() {
+            let repoURL = repoRoot.appending(path: repoRelativePath)
+            if FileManager.default.fileExists(atPath: repoURL.path()) {
+                return repoURL
+            }
+        }
+
+        return nil
+    }
+
+    private func updateSetupState() {
+        let assetAvailability = resolvedAssetAvailability()
+        setupState = HelperSetupState(
+            bridgeReachable: snapshot != nil,
+            connectedSessionCount: snapshot?.status.sessionCount ?? 0,
+            assetAvailability: assetAvailability
+        )
+    }
+
+    private func requestNotificationsIfNeeded() async {
+        guard UserDefaults.standard.object(forKey: HelperPreferences.notificationsEnabledKey) == nil
+            || UserDefaults.standard.bool(forKey: HelperPreferences.notificationsEnabledKey)
+        else {
+            return
+        }
+
+        await HelperNotifications.requestAuthorizationIfNeeded()
+    }
+
+    private func maybeNotifyOnStateTransition() {
+        let notificationsEnabled =
+            UserDefaults.standard.object(forKey: HelperPreferences.notificationsEnabledKey) == nil
+            || UserDefaults.standard.bool(forKey: HelperPreferences.notificationsEnabledKey)
+        guard notificationsEnabled else {
+            previousBridgeReachable = snapshot != nil
+            return
+        }
+
+        let currentBridgeReachable = snapshot != nil
+        let previousConnected = (previousSnapshot?.status.sessionCount ?? 0) > 0
+        let currentConnected = (snapshot?.status.sessionCount ?? 0) > 0
+
+        if !previousConnected && currentConnected {
+            HelperNotifications.post(
+                title: "Word connected",
+                body: "A Word taskpane session is connected to Word MCP Bridge."
+            )
+        } else if previousConnected && !currentConnected {
+            HelperNotifications.post(
+                title: "Word disconnected",
+                body: "The helper lost its live Word taskpane session. Open Word and the add-in to reconnect."
+            )
+        }
+
+        if previousBridgeReachable && !currentBridgeReachable && !isStopping {
+            HelperNotifications.post(
+                title: "Bridge not reachable",
+                body: "The local bridge stopped responding. Reopen the helper or restart the bridge."
+            )
+        }
+
+        previousBridgeReachable = currentBridgeReachable
     }
 }
 
