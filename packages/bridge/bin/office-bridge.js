@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,28 +8,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 const packageDir = path.resolve(binDir, "..");
 const distCli = path.join(packageDir, "dist", "cli.js");
+const packageJson = path.join(packageDir, "package.json");
 const srcDir = path.join(packageDir, "src");
 
-function needsBuild() {
-  if (!existsSync(distCli)) return true;
-
-  const distMtime = statSync(distCli).mtimeMs;
-  const queue = [srcDir];
-  while (queue.length > 0) {
-    const dir = queue.pop();
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        queue.push(full);
-      } else if (entry.name.endsWith(".ts") && statSync(full).mtimeMs > distMtime) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-if (needsBuild()) {
+if (!existsSync(distCli) && existsSync(packageJson) && existsSync(srcDir)) {
   const command = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   const result = spawnSync(command, ["build"], {
     cwd: packageDir,
@@ -39,6 +21,13 @@ if (needsBuild()) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+}
+
+if (!existsSync(distCli)) {
+  console.error(
+    "office-bridge could not find a built CLI. Reinstall the package or run `pnpm build` in the repo checkout.",
+  );
+  process.exit(1);
 }
 
 await import(pathToFileURL(distCli).href);

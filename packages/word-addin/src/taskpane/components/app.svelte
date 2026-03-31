@@ -34,6 +34,17 @@
   let lastRefreshLabel = "Never";
   let errorMessage = "";
   let activity: ActivityItem[] = [];
+  const localSetupCommands = [
+    "pnpm setup:word",
+    "pnpm bridge:serve",
+    "pnpm dev-server:word",
+    "pnpm start:word",
+  ];
+  const hostedModeCommands = [
+    "office-bridge serve",
+    "office-bridge status",
+    "office-bridge mcp-serve",
+  ];
 
   function log(message: string) {
     activity = [
@@ -171,6 +182,38 @@
   {/if}
 
   <div class="grid">
+    {#if !snapshot}
+      <section class="panel panel-wide setup-panel">
+        <h2>How to connect</h2>
+        <p class="caption">
+          This taskpane is waiting for a live bridge session. Start the bridge server, launch
+          the Word add-in, and then reopen or refresh this pane.
+        </p>
+        <div class="setup-grid">
+          <div>
+            <h3>Local developer mode</h3>
+            <ol class="steps">
+              {#each localSetupCommands as command}
+                <li><code>{command}</code></li>
+              {/each}
+            </ol>
+          </div>
+          <div>
+            <h3>Hosted add-in mode</h3>
+            <ol class="steps">
+              {#each hostedModeCommands as command}
+                <li><code>{command}</code></li>
+              {/each}
+            </ol>
+          </div>
+        </div>
+        <p class="caption">
+          Once Word is connected, MCP hosts can attach through
+          <code>office-bridge mcp-serve</code>.
+        </p>
+      </section>
+    {/if}
+
     <section class="panel">
       <h2>Bridge</h2>
       <dl>
@@ -375,6 +418,22 @@
     grid-column: 1 / -1;
   }
 
+  .setup-panel {
+    display: grid;
+    gap: 14px;
+  }
+
+  .setup-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+  }
+
+  h3 {
+    margin: 0 0 10px;
+    font-size: 15px;
+  }
+
   .panel-error {
     border-color: rgba(220, 38, 38, 0.2);
     background: rgba(255, 237, 237, 0.92);
@@ -447,6 +506,20 @@
   .caption,
   .muted {
     color: #61708b;
+  }
+
+  .steps {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 8px;
+  }
+
+  code {
+    font-family:
+      ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas,
+      "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
   }
 
   .caption {

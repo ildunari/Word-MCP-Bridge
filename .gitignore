@@ -2,8 +2,10 @@ node_modules
 dist
 .DS_Store
 .cursor
-.claude
 .pnpm-store
 coverage
 *.tsbuildinfo
 packages/word-addin/.vite
+release
+apps/mac-helper/.build
+apps/mac-helper/.swiftpm

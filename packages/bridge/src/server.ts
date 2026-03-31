@@ -46,12 +46,42 @@ interface PendingRequest {
 
 type SseListener = (event: BridgeStoredEvent) => void;
 
+export interface BridgeSessionMetrics {
+  eventCount: number;
+  sessionUpdateCount: number;
+  toolCallCount: number;
+  toolErrorCount: number;
+  bridgeWarningCount: number;
+  bridgeErrorCount: number;
+  unsafeOfficeJsCount: number;
+  requestTimeoutCount: number;
+  connectionDropCount: number;
+  lastEventAt: number | null;
+}
+
+export interface BridgeServerStatus {
+  startedAt: number;
+  uptimeMs: number;
+  host: string;
+  port: number;
+  httpUrl: string;
+  wsUrl: string;
+  sessionCount: number;
+  sessions: BridgeSessionRecord[];
+  totals: BridgeSessionMetrics & {
+    pendingCount: number;
+    connectedSessionCount: number;
+    disconnectedSessionCount: number;
+  };
+}
+
 export interface BridgeSessionRecord {
   snapshot: BridgeSessionSnapshot;
   connectedAt: number;
   lastSeenAt: number;
   recentEvents: BridgeStoredEvent[];
   pendingCount: number;
+  metrics: BridgeSessionMetrics;
 }
 
 interface SessionState extends BridgeSessionRecord {
@@ -82,6 +112,7 @@ export interface BridgeServerHandle {
   listSessions: () => BridgeSessionRecord[];
   getSession: (sessionId: string) => BridgeSessionRecord | undefined;
   getEvents: (sessionId: string, limit?: number) => BridgeStoredEvent[];
+  getStatus: () => BridgeServerStatus;
   invokeSession: <T = unknown>(request: BridgeInvokeRequest) => Promise<T>;
   close: () => Promise<void>;
 }
@@ -208,7 +239,45 @@ function publicSessionRecord(session: SessionState): BridgeSessionRecord {
     lastSeenAt: session.lastSeenAt,
     recentEvents: [...session.recentEvents],
     pendingCount: session.pending.size,
+    metrics: { ...session.metrics },
   };
+}
+
+function createEmptyMetrics(): BridgeSessionMetrics {
+  return {
+    eventCount: 0,
+    sessionUpdateCount: 0,
+    toolCallCount: 0,
+    toolErrorCount: 0,
+    bridgeWarningCount: 0,
+    bridgeErrorCount: 0,
+    unsafeOfficeJsCount: 0,
+    requestTimeoutCount: 0,
+    connectionDropCount: 0,
+    lastEventAt: null,
+  };
+}
+
+function incrementMetrics(metrics: BridgeSessionMetrics, event: string, payload?: unknown) {
+  metrics.eventCount += 1;
+  metrics.lastEventAt = Date.now();
+
+  if (event === "session_updated") metrics.sessionUpdateCount += 1;
+  if (event === "tool_executed") {
+    metrics.toolCallCount += 1;
+    if (
+      payload &&
+      typeof payload === "object" &&
+      (payload as { isError?: boolean }).isError === true
+    ) {
+      metrics.toolErrorCount += 1;
+    }
+  }
+  if (event === "bridge_warning") metrics.bridgeWarningCount += 1;
+  if (event === "unsafe_office_js_executed") metrics.unsafeOfficeJsCount += 1;
+  if (event === "bridge_error" || event.startsWith("error:")) {
+    metrics.bridgeErrorCount += 1;
+  }
 }
 
 function parseSocketMessage(raw: unknown): BridgeWireMessage | null {
@@ -230,6 +299,7 @@ function addStoredEvent(
   eventLimit: number,
   event: string,
   payload?: unknown,
+  totals?: BridgeServerStatus["totals"],
 ) {
   const storedEvent: BridgeStoredEvent = {
     id: createBridgeId("event"),
@@ -238,6 +308,10 @@ function addStoredEvent(
     payload: serializeForJson(payload),
   };
   session.recentEvents.push(storedEvent);
+  incrementMetrics(session.metrics, event, payload);
+  if (totals) {
+    incrementMetrics(totals, event, payload);
+  }
   if (session.recentEvents.length > eventLimit) {
     session.recentEvents.splice(0, session.recentEvents.length - eventLimit);
   }
@@ -257,6 +331,7 @@ function normalizeSessionSelector(value: string): string {
 export async function createBridgeServer(
   options: BridgeServerOptions = {},
 ): Promise<BridgeServerHandle> {
+  const startedAt = Date.now();
   const host = options.host ?? DEFAULT_BRIDGE_HOST;
   const port = options.port ?? DEFAULT_BRIDGE_PORT;
   const eventLimit = options.eventLimit ?? DEFAULT_EVENT_LIMIT;
@@ -275,6 +350,12 @@ export async function createBridgeServer(
         options.tokenPath ?? DEFAULT_BRIDGE_TOKEN_PATH,
       );
   const sessions = new Map<string, SessionState>();
+  const totals = {
+    ...createEmptyMetrics(),
+    pendingCount: 0,
+    connectedSessionCount: 0,
+    disconnectedSessionCount: 0,
+  };
 
   const server = createServer(
     { key: tls.key, cert: tls.cert },
@@ -306,6 +387,14 @@ export async function createBridgeServer(
             sessions: sessions.size,
             host,
             port,
+          });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/status") {
+          jsonResponse(res, 200, {
+            ok: true,
+            status: buildServerStatus(),
           });
           return;
         }
@@ -667,12 +756,21 @@ export async function createBridgeServer(
   function removeSession(sessionId: string, reason: string) {
     const session = sessions.get(sessionId);
     if (!session) return;
+    totals.disconnectedSessionCount += 1;
+    if (reason !== "replaced" && reason !== "bridge server shutting down") {
+      session.metrics.connectionDropCount += 1;
+      totals.connectionDropCount += 1;
+    }
     for (const [requestId, pending] of session.pending) {
       clearTimeout(pending.timeout);
       pending.reject(new Error(`Bridge session disconnected: ${reason}`));
       session.pending.delete(requestId);
     }
     sessions.delete(sessionId);
+    totals.pendingCount = [...sessions.values()].reduce(
+      (sum, current) => sum + current.pending.size,
+      0,
+    );
     logger.log(`[bridge] disconnected ${sessionId} (${reason})`);
   }
 
@@ -684,11 +782,11 @@ export async function createBridgeServer(
     if (message.event === "session_updated") {
       const snapshot = message.payload as BridgeSessionSnapshot;
       session.snapshot = snapshot;
-      addStoredEvent(session, eventLimit, message.event, snapshot);
+      addStoredEvent(session, eventLimit, message.event, snapshot, totals);
       return;
     }
 
-    addStoredEvent(session, eventLimit, message.event, message.payload);
+    addStoredEvent(session, eventLimit, message.event, message.payload, totals);
   }
 
   function handleSessionResponse(
@@ -748,13 +846,15 @@ export async function createBridgeServer(
           pending: new Map(),
           pendingCount: 0,
           sseListeners: new Set(),
+          metrics: createEmptyMetrics(),
         };
 
+        totals.connectedSessionCount += 1;
         addStoredEvent(next, eventLimit, "bridge_connected", {
           sessionId,
           app: message.snapshot.app,
           documentId: message.snapshot.documentId,
-        });
+        }, totals);
 
         sessions.set(sessionId, next);
         socket.send(
@@ -853,6 +953,9 @@ export async function createBridgeServer(
     const promise = new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
         session.pending.delete(requestId);
+        session.pendingCount = session.pending.size;
+        session.metrics.requestTimeoutCount += 1;
+        totals.requestTimeoutCount += 1;
         reject(
           new Error(
             `Bridge request timed out after ${timeoutMs}ms (${request.method})`,
@@ -862,6 +965,10 @@ export async function createBridgeServer(
 
       session.pending.set(requestId, { resolve, reject, timeout });
       session.pendingCount = session.pending.size;
+      totals.pendingCount = [...sessions.values()].reduce(
+        (sum, current) => sum + current.pending.size,
+        0,
+      );
     });
 
     socketSend(session.socket, {
@@ -874,9 +981,17 @@ export async function createBridgeServer(
     try {
       const result = await promise;
       session.pendingCount = session.pending.size;
+      totals.pendingCount = [...sessions.values()].reduce(
+        (sum, current) => sum + current.pending.size,
+        0,
+      );
       return result;
     } catch (error) {
       session.pendingCount = session.pending.size;
+      totals.pendingCount = [...sessions.values()].reduce(
+        (sum, current) => sum + current.pending.size,
+        0,
+      );
       throw error;
     }
   }
@@ -902,6 +1017,7 @@ export async function createBridgeServer(
       if (!session) return [];
       return session.recentEvents.slice(-Math.max(1, limit));
     },
+    getStatus: () => buildServerStatus(),
     invokeSession: invokeSessionInternal,
     close: async () => {
       for (const session of sessions.values()) {
@@ -931,6 +1047,25 @@ export async function createBridgeServer(
   };
 
   return handle;
+
+  function buildServerStatus(): BridgeServerStatus {
+    const publicSessions = [...sessions.values()].map(publicSessionRecord);
+    totals.pendingCount = publicSessions.reduce(
+      (sum, session) => sum + session.pendingCount,
+      0,
+    );
+    return {
+      startedAt,
+      uptimeMs: Date.now() - startedAt,
+      host,
+      port,
+      httpUrl,
+      wsUrl,
+      sessionCount: publicSessions.length,
+      sessions: publicSessions,
+      totals: { ...totals },
+    };
+  }
 }
 
 export function summarizeExecutionError(result: unknown): string | undefined {

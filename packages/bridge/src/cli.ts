@@ -25,6 +25,7 @@ import {
 import { getScreenshotTimeoutMs } from "./screenshot-timeout.js";
 import {
   type BridgeServerHandle,
+  type BridgeServerStatus,
   type BridgeSessionRecord,
   createBridgeServer,
   findMatchingSession,
@@ -141,6 +142,7 @@ Commands:
   assert [session] [--mode X] [--phase Y] [--streaming true|false]
   bench [session] <toolName> [--runs N]
   summary [session]
+  status
   diag [session]
   dom [session] <query>
   reset [session] [--keep-config]
@@ -175,6 +177,7 @@ Examples:
   office-bridge assert word --mode agent --streaming true
   office-bridge bench word get_document_text --runs 10
   office-bridge summary word
+  office-bridge status
   office-bridge diag word
   office-bridge dom word visible-panels
   office-bridge reset word --keep-config
@@ -1236,6 +1239,16 @@ async function commandSummary(cli: Cli) {
   console.log(buildSessionSummaryLine(session.snapshot));
 }
 
+async function commandStatus(cli: Cli) {
+  const response = await requestJson<{ ok: true; status: BridgeServerStatus }>(
+    "GET",
+    "/status",
+    undefined,
+    reqOpts(cli),
+  );
+  printFormattedJson(response.status, cli);
+}
+
 async function commandDiag(cli: Cli) {
   const session = await resolveSession(cli, cli.positionals[1]);
   const id = session.snapshot.sessionId;
@@ -1411,6 +1424,7 @@ const COMMANDS: Record<string, (cli: Cli) => Promise<void>> = {
   assert: commandAssert,
   bench: commandBench,
   summary: commandSummary,
+  status: commandStatus,
   diag: commandDiag,
   dom: commandDom,
   reset: commandReset,

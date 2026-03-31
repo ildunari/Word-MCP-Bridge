@@ -4,6 +4,18 @@
   "type": "module",
   "description": "Local HTTPS/WebSocket bridge, CLI, and MCP server for Word-MCP-Bridge",
   "license": "MIT",
+  "keywords": [
+    "mcp",
+    "word",
+    "office",
+    "bridge",
+    "claude",
+    "cursor",
+    "codex"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "main": "src/index.ts",
   "types": "src/index.ts",
   "bin": {
@@ -16,6 +28,7 @@
     "./server": "./src/server.ts"
   },
   "publishConfig": {
+    "access": "public",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
     "bin": {
@@ -52,6 +65,7 @@
     "build": "rm -rf dist tsconfig.build.tsbuildinfo && tsc -p tsconfig.build.json",
     "cli": "pnpm build && node dist/cli.js",
     "start": "pnpm build && node dist/cli.js serve",
+    "pack:check": "pnpm build && npm pack --dry-run",
     "prepublishOnly": "pnpm build",
     "test": "vitest run --passWithNoTests"
   },

@@ -1,0 +1,23 @@
+{
+  "skill_name": "use-word-mcp-bridge-mcp",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I have Word open with the Word MCP Bridge add-in. Should I use MCP or the terminal to watch selection changes continuously, and what two processes must be running for MCP tools to work?",
+      "expected_output": "Recommends CLI watchers (`watch-selection` / related) for continuous terminal streaming; states both `office-bridge serve` and `office-bridge mcp-serve` (with matching `--url`) must run; references `packages/bridge/src/mcp.ts` vs `packages/bridge/src/cli.ts`.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "List the MCP tools exposed by the Word MCP Bridge stdio server and what `run_unsafe_office_js` requires.",
+      "expected_output": "Names the tools from `mcp.ts` (list_sessions, get_session_snapshot, get_live_context, get_recent_events, call_bridge_tool, run_unsafe_office_js, vfs_list/read/write/delete) and states unsafe Office.js only when the session exposes the `unsafe_office_js` capability.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "MCP says no bridge sessions. What should I check in order, and where is host setup documented?",
+      "expected_output": "Checks bridge server up, Word taskpane connected, correct `--url` (default https://localhost:4017), optional `OFFICE_BRIDGE_TOKEN`; points to `packages/bridge/README.md` and root `README.md`; suggests `office-bridge list` or `status`.",
+      "files": []
+    }
+  ]
+}

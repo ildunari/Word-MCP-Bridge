@@ -1,0 +1,23 @@
+{
+  "skill_name": "use-word-mcp-bridge-cli",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I only ran office-bridge mcp-serve but Cursor still can't see Word. What am I missing and which process actually talks to the add-in?",
+      "expected_output": "Explains that mcp-serve is the stdio MCP adapter, not the local bridge the Word taskpane connects to; tells the user to run office-bridge serve or pnpm bridge:serve; references the repo or bridge README.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "What's the fastest way to confirm from the terminal that Word is connected, and what command should I use if I want a bridge-level status check too?",
+      "expected_output": "Recommends office-bridge list and/or office-bridge summary word for session-level checks, plus office-bridge status for bridge-level health.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Fresh clone: walk me through the local Word MCP Bridge workflow and then tell me how to stream selection changes in the terminal.",
+      "expected_output": "Includes pnpm install, pnpm setup:word, pnpm bridge:serve, pnpm dev-server:word, pnpm start:word, opening the taskpane, and then office-bridge watch-selection word or the pnpm exec equivalent.",
+      "files": []
+    }
+  ]
+}
