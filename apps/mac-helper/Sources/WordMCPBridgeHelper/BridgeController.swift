@@ -12,6 +12,7 @@ final class BridgeController: NSObject, ObservableObject {
 
     private var pollTask: Task<Void, Never>?
     private var bridgeProcess: Process?
+    private var hasAttemptedAutoStart = false
     private lazy var session: URLSession = {
         URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
     }()
@@ -30,6 +31,7 @@ final class BridgeController: NSObject, ObservableObject {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             guard let self else { return }
+            self.autoStartBridgeIfNeeded()
             while !Task.isCancelled {
                 await self.refresh()
                 try? await Task.sleep(for: .seconds(3))
@@ -168,6 +170,18 @@ final class BridgeController: NSObject, ObservableObject {
             current.deleteLastPathComponent()
         }
         return nil
+    }
+
+    private func autoStartBridgeIfNeeded() {
+        guard !hasAttemptedAutoStart else { return }
+        hasAttemptedAutoStart = true
+        guard UserDefaults.standard.object(forKey: HelperPreferences.autoStartBridgeOnLaunchKey) == nil
+            || UserDefaults.standard.bool(forKey: HelperPreferences.autoStartBridgeOnLaunchKey)
+        else {
+            return
+        }
+        guard !isBridgeRunning, bridgeProcess?.isRunning != true else { return }
+        startBridge()
     }
 }
 

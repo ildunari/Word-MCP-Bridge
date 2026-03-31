@@ -17,6 +17,10 @@ struct WordMCPBridgeHelperApp: App {
                 }
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+        }
     }
 
     private var menuBarSymbol: String {
@@ -71,6 +75,7 @@ private struct HelperMenuView: View {
                     Button("Open Add-in Folder") {
                         controller.openManifestFolder()
                     }
+                    SettingsLink()
                     Divider()
                     Button("Quit") {
                         NSApplication.shared.terminate(nil)
