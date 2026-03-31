@@ -9,3 +9,5 @@ packages/word-addin/.vite
 release
 apps/mac-helper/.build
 apps/mac-helper/.swiftpm
+apps/mac-helper/AppIcon.iconset
+apps/mac-helper/WordMCPBridgeHelper.icns

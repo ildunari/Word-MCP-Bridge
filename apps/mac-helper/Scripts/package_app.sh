@@ -9,8 +9,13 @@ OUTPUT_DIR="$REPO_ROOT/release/mac-helper"
 APP_NAME="Word MCP Bridge Helper.app"
 APP_BUNDLE="$OUTPUT_DIR/$APP_NAME"
 SETUP_DIR="$APP_BUNDLE/Contents/Resources/setup"
+ICONSET_DIR="$APP_DIR/AppIcon.iconset"
+ICON_FILE="$APP_BUNDLE/Contents/Resources/WordMCPBridgeHelper.icns"
 
 swift build --configuration release --package-path "$APP_DIR"
+python3 "$APP_DIR/Scripts/build_helper_icon.py"
+rm -f "$APP_DIR/WordMCPBridgeHelper.icns"
+iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/WordMCPBridgeHelper.icns"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$SETUP_DIR"
@@ -28,6 +33,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
   <string>dev.wordmcpbridge.helper</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>WordMCPBridgeHelper</string>
   <key>CFBundleName</key>
   <string>Word MCP Bridge Helper</string>
   <key>CFBundlePackageType</key>
@@ -45,6 +52,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 PLIST
 
 cp "$BUILD_DIR/WordMCPBridgeHelper" "$APP_BUNDLE/Contents/MacOS/WordMCPBridgeHelper"
+cp "$APP_DIR/WordMCPBridgeHelper.icns" "$ICON_FILE"
 cp "$REPO_ROOT/apps/mac-helper/SETUP-GUIDE.md" "$SETUP_DIR/SETUP-GUIDE.md"
 cp "$REPO_ROOT/packages/word-addin/manifest.prod.xml" "$SETUP_DIR/manifest.prod.xml"
 cp "$REPO_ROOT/packages/word-addin/manifest.xml" "$SETUP_DIR/manifest.xml"
