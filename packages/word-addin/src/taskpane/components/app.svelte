@@ -34,6 +34,7 @@
   let lastRefreshLabel = "Never";
   let errorMessage = "";
   let activity: ActivityItem[] = [];
+  const mcpCommand = "office-bridge mcp-serve";
   const localSetupCommands = [
     "pnpm setup:word",
     "pnpm bridge:serve",
@@ -45,6 +46,11 @@
     "office-bridge status",
     "office-bridge mcp-serve",
   ];
+  const capabilityDescriptions: Record<string, string> = {
+    observe: "Streams live Word document metadata, focus, and selection context.",
+    unsafe_office_js: "Allows privileged Office.js execution for high-power agents and tools.",
+    tool_call: "Routes tool execution through the live bridge session when supported.",
+  };
 
   function log(message: string) {
     activity = [
@@ -88,6 +94,42 @@
   function selectionPreview(): string {
     if (!liveContext?.selection?.hasSelection) return "No current selection";
     return liveContext.selection.selectedText ?? "Selection exists";
+  }
+
+  function capabilityDescription(capability: string): string {
+    return (
+      capabilityDescriptions[capability] ??
+      "Advertised by the live bridge session for connected MCP or CLI clients."
+    );
+  }
+
+  function connectionLabel(): string {
+    if (snapshot) return "Connected";
+    if (controller?.enabled) return "Waiting for bridge";
+    return "Disabled";
+  }
+
+  function connectionSummary(): string {
+    if (snapshot) return "A live Word taskpane session is available to CLI and MCP clients.";
+    if (controller?.enabled) return "The add-in is ready and polling for a local bridge session.";
+    return "Bridge mode is disabled by query params or saved configuration.";
+  }
+
+  function documentHeadline(): string {
+    const title = metadataValue("title");
+    if (title !== "n/a") return title;
+    if (snapshot?.documentId) return snapshot.documentId;
+    return "No document metadata yet";
+  }
+
+  function capabilityCountLabel(): string {
+    const count = snapshot?.gateway?.capabilities?.length ?? 0;
+    return count === 1 ? "1 capability" : `${count} capabilities`;
+  }
+
+  function liveContextUpdatedLabel(): string {
+    if (!liveContext?.updatedAt) return "Waiting for live updates";
+    return new Date(liveContext.updatedAt).toLocaleTimeString();
   }
 
   onMount(() => {
@@ -158,19 +200,51 @@
 
 <div class="shell">
   <section class="hero">
-    <p class="eyebrow">Word MCP Bridge</p>
-    <h1>Minimal Word connector</h1>
-    <p class="lede">
-      This add-in keeps a live bridge session open so local CLI and MCP clients can inspect
-      Word context and run privileged Office.js commands.
-    </p>
-    <div class="hero-actions">
-      <button on:click={() => void refreshStatus()} disabled={!controller || isRefreshing}>
-        {isRefreshing ? "Refreshing..." : "Refresh"}
-      </button>
-      <span class:healthy={Boolean(snapshot)} class="status-pill">
-        {snapshot ? "Connected" : controller?.enabled ? "Waiting for bridge" : "Disabled"}
-      </span>
+    <div class="hero-top">
+      <div>
+        <p class="eyebrow">Word MCP Bridge</p>
+        <h1>Live Word connector</h1>
+        <p class="lede">
+          This add-in keeps a live bridge session open so local CLI and MCP clients can inspect
+          Word context and run privileged Office.js commands.
+        </p>
+      </div>
+      <div class="hero-actions">
+        <button on:click={() => void refreshStatus()} disabled={!controller || isRefreshing}>
+          {isRefreshing ? "Refreshing..." : "Refresh"}
+        </button>
+        <span class:healthy={Boolean(snapshot)} class="status-pill">
+          {connectionLabel()}
+        </span>
+      </div>
+    </div>
+
+    <div class="hero-summary">
+      <article class="summary-card">
+        <span class="summary-label">Session state</span>
+        <strong>{connectionLabel()}</strong>
+        <p>{connectionSummary()}</p>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Document</span>
+        <strong>{documentHeadline()}</strong>
+        <p>{snapshot?.documentId ?? "Connect Word to populate the current document identity."}</p>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Selection</span>
+        <strong>{liveContext?.selection?.hasSelection ? "Live selection" : "No selection"}</strong>
+        <p>{selectionPreview()}</p>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Capabilities</span>
+        <strong>{capabilityCountLabel()}</strong>
+        <p>MCP hosts attach through <code>{mcpCommand}</code>.</p>
+      </article>
+    </div>
+
+    <div class="hero-footer">
+      <span>Bridge endpoint: <code>{bridgeUrl}</code></span>
+      <span>Last refresh: {lastRefreshLabel}</span>
     </div>
   </section>
 
@@ -190,7 +264,7 @@
           the Word add-in, and then reopen or refresh this pane.
         </p>
         <div class="setup-grid">
-          <div>
+          <div class="setup-card">
             <h3>Local developer mode</h3>
             <ol class="steps">
               {#each localSetupCommands as command}
@@ -198,7 +272,7 @@
               {/each}
             </ol>
           </div>
-          <div>
+          <div class="setup-card">
             <h3>Hosted add-in mode</h3>
             <ol class="steps">
               {#each hostedModeCommands as command}
@@ -206,11 +280,15 @@
               {/each}
             </ol>
           </div>
+          <div class="setup-card">
+            <h3>Attach your host</h3>
+            <p class="caption compact">
+              Once Word is connected, point Claude Desktop, Cursor, Claude Code, or Codex at the
+              local MCP process:
+            </p>
+            <code class="inline-command">{mcpCommand}</code>
+          </div>
         </div>
-        <p class="caption">
-          Once Word is connected, MCP hosts can attach through
-          <code>office-bridge mcp-serve</code>.
-        </p>
       </section>
     {/if}
 
@@ -219,19 +297,19 @@
       <dl>
         <div>
           <dt>Enabled</dt>
-          <dd>{controller?.enabled ? "yes" : "no"}</dd>
+          <dd><span class:healthy-text={controller?.enabled}>{controller?.enabled ? "yes" : "no"}</span></dd>
         </div>
         <div>
           <dt>Bridge URL</dt>
-          <dd>{bridgeUrl}</dd>
+          <dd><code>{bridgeUrl}</code></dd>
         </div>
         <div>
           <dt>Session ID</dt>
-          <dd>{snapshot?.sessionId ?? "pending"}</dd>
+          <dd><code>{snapshot?.sessionId ?? "pending"}</code></dd>
         </div>
         <div>
           <dt>Instance ID</dt>
-          <dd>{controller?.instanceId ?? "pending"}</dd>
+          <dd><code>{controller?.instanceId ?? "pending"}</code></dd>
         </div>
         <div>
           <dt>Last refresh</dt>
@@ -242,10 +320,11 @@
 
     <section class="panel">
       <h2>Document</h2>
+      <p class="panel-lede">Word metadata that external tools can reason about immediately.</p>
       <dl>
         <div>
           <dt>Document ID</dt>
-          <dd>{snapshot?.documentId ?? "pending"}</dd>
+          <dd><code>{snapshot?.documentId ?? "pending"}</code></dd>
         </div>
         <div>
           <dt>Title</dt>
@@ -272,6 +351,7 @@
 
     <section class="panel">
       <h2>Live context</h2>
+      <p class="panel-lede">The dynamic view of where the user is and what Word is focused on.</p>
       <dl>
         <div>
           <dt>Focus target</dt>
@@ -279,7 +359,7 @@
         </div>
         <div>
           <dt>Selection</dt>
-          <dd>{selectionPreview()}</dd>
+          <dd class="selection-preview">{selectionPreview()}</dd>
         </div>
         <div>
           <dt>Selection style</dt>
@@ -287,9 +367,7 @@
         </div>
         <div>
           <dt>Updated at</dt>
-          <dd>
-            {liveContext?.updatedAt ? new Date(liveContext.updatedAt).toLocaleTimeString() : "n/a"}
-          </dd>
+          <dd>{liveContextUpdatedLabel()}</dd>
         </div>
       </dl>
     </section>
@@ -297,9 +375,12 @@
     <section class="panel">
       <h2>Capabilities</h2>
       {#if snapshot?.gateway?.capabilities?.length}
-        <ul class="chip-list">
+        <ul class="capability-list">
           {#each snapshot.gateway.capabilities as capability}
-            <li>{capability}</li>
+            <li>
+              <strong>{capability}</strong>
+              <span>{capabilityDescription(capability)}</span>
+            </li>
           {/each}
         </ul>
       {:else}
@@ -344,6 +425,14 @@
     margin-bottom: 18px;
   }
 
+  .hero-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
   .eyebrow {
     margin: 0 0 8px;
     text-transform: uppercase;
@@ -368,7 +457,7 @@
     display: flex;
     gap: 12px;
     align-items: center;
-    margin-top: 16px;
+    flex-wrap: wrap;
   }
 
   button {
@@ -400,6 +489,51 @@
     color: #176c42;
   }
 
+  .hero-summary {
+    margin-top: 18px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+
+  .summary-card {
+    border-radius: 16px;
+    padding: 14px;
+    background: rgba(244, 247, 255, 0.88);
+    border: 1px solid rgba(45, 91, 255, 0.08);
+    display: grid;
+    gap: 6px;
+  }
+
+  .summary-card strong {
+    font-size: 15px;
+    color: #162033;
+  }
+
+  .summary-card p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #52617d;
+  }
+
+  .summary-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #61708b;
+  }
+
+  .hero-footer {
+    margin-top: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    font-size: 13px;
+    color: #61708b;
+  }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -429,6 +563,18 @@
     gap: 16px;
   }
 
+  .setup-card {
+    border-radius: 16px;
+    padding: 16px;
+    background: rgba(244, 247, 255, 0.8);
+    border: 1px solid rgba(25, 40, 72, 0.08);
+  }
+
+  h2 {
+    margin: 0 0 14px;
+    font-size: 16px;
+  }
+
   h3 {
     margin: 0 0 10px;
     font-size: 15px;
@@ -440,9 +586,11 @@
     margin-bottom: 16px;
   }
 
-  h2 {
+  .panel-lede {
     margin: 0 0 14px;
-    font-size: 16px;
+    color: #61708b;
+    font-size: 13px;
+    line-height: 1.45;
   }
 
   dl {
@@ -469,22 +617,39 @@
     color: #162033;
   }
 
-  .chip-list {
+  .selection-preview {
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(25, 40, 72, 0.05);
+    line-height: 1.45;
+  }
+
+  .capability-list {
     list-style: none;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    display: grid;
+    gap: 10px;
     padding: 0;
     margin: 0;
   }
 
-  .chip-list li {
-    border-radius: 999px;
-    padding: 7px 11px;
-    background: rgba(45, 91, 255, 0.1);
+  .capability-list li {
+    border-radius: 14px;
+    padding: 12px;
+    background: rgba(45, 91, 255, 0.08);
+    border: 1px solid rgba(45, 91, 255, 0.1);
+    display: grid;
+    gap: 4px;
+  }
+
+  .capability-list strong {
     color: #2447c5;
     font-size: 13px;
-    font-weight: 600;
+  }
+
+  .capability-list span {
+    color: #52617d;
+    font-size: 13px;
+    line-height: 1.45;
   }
 
   .activity-list {
@@ -492,7 +657,7 @@
     padding: 0;
     margin: 0;
     display: grid;
-    gap: 10px;
+    gap: 0;
   }
 
   .activity-list li {
@@ -500,6 +665,13 @@
     justify-content: space-between;
     gap: 12px;
     font-size: 14px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(25, 40, 72, 0.08);
+  }
+
+  .activity-list li:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
   }
 
   .activity-list time,
@@ -515,11 +687,24 @@
     gap: 8px;
   }
 
+  .healthy-text {
+    color: #176c42;
+    font-weight: 600;
+  }
+
   code {
     font-family:
       ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas,
       "Liberation Mono", "Courier New", monospace;
     font-size: 12px;
+  }
+
+  .inline-command {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(25, 40, 72, 0.06);
   }
 
   .caption {
@@ -530,5 +715,9 @@
 
   .muted {
     margin: 0;
+  }
+
+  .compact {
+    margin-top: 0;
   }
 </style>
