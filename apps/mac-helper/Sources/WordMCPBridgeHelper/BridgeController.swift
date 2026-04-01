@@ -16,10 +16,14 @@ final class BridgeController: NSObject, ObservableObject {
     @Published private(set) var isStarting = false
     @Published private(set) var isStopping = false
     @Published private(set) var lastError: String?
+    @Published private(set) var isWordAddinStarting = false
+    @Published private(set) var wordAddinLastError: String?
 
     private var pollTask: Task<Void, Never>?
     private var bridgeProcess: Process?
+    private var wordAddinProcess: Process?
     private var hasAttemptedAutoStart = false
+    private var hasAttemptedAutoLoadWordAddin = false
     private var previousSnapshot: HelperSnapshot?
     private var previousBridgeReachable = false
     private lazy var session: URLSession = {
@@ -30,6 +34,23 @@ final class BridgeController: NSObject, ObservableObject {
 
     var isBridgeRunning: Bool {
         setupState.bridgeReachable || setupState.bridgeProcessRunning || isStarting
+    }
+
+    var isWordAddinDevRunning: Bool {
+        wordAddinProcess?.isRunning == true
+    }
+
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.stopWordAddinProcessOnQuit()
+            }
+        }
     }
 
     deinit {
@@ -43,6 +64,8 @@ final class BridgeController: NSObject, ObservableObject {
             self.updateSetupState()
             self.autoStartBridgeIfNeeded()
             await self.requestNotificationsIfNeeded()
+            try? await Task.sleep(for: .milliseconds(500))
+            self.autoLoadWordAddinIfNeeded()
             while !Task.isCancelled {
                 await self.refresh()
                 try? await Task.sleep(for: .seconds(3))
@@ -86,6 +109,7 @@ final class BridgeController: NSObject, ObservableObject {
         process.currentDirectoryURL = repoRoot
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["pnpm", "bridge:serve"]
+        process.environment = launchEnvironment()
         process.terminationHandler = { [weak self] process in
             Task { @MainActor [weak self] in
                 self?.bridgeProcess = nil
@@ -224,6 +248,111 @@ final class BridgeController: NSObject, ObservableObject {
         showOnboarding(force: true)
     }
 
+    func startWordAddinDevSession() {
+        guard wordAddinProcess?.isRunning != true else { return }
+        guard let repoRoot = resolveRepoRoot() else {
+            wordAddinLastError = "Could not locate the Word-MCP-Bridge repo root. Set WORD_MCP_BRIDGE_REPO_ROOT or clone the repo under ~/LocalDev/Word-MCP-Bridge."
+            return
+        }
+        let wordAddinDir = repoRoot.appending(path: "packages/word-addin")
+        let manifestPath = wordAddinDir.appending(path: "manifest.xml")
+        guard FileManager.default.fileExists(atPath: manifestPath.path()) else {
+            wordAddinLastError = "Could not find packages/word-addin/manifest.xml in the repo."
+            return
+        }
+
+        isWordAddinStarting = true
+        wordAddinLastError = nil
+
+        let process = Process()
+        process.currentDirectoryURL = wordAddinDir
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["pnpm", "exec", "office-addin-debugging", "start", "manifest.xml"]
+        process.environment = launchEnvironment()
+
+        let stderrPipe = Pipe()
+        if let nullOut = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null")) {
+            process.standardOutput = nullOut
+        }
+        process.standardError = stderrPipe
+
+        process.terminationHandler = { [weak self] proc in
+            Task { @MainActor [weak self] in
+                self?.wordAddinProcess = nil
+                self?.isWordAddinStarting = false
+                if proc.terminationStatus != 0 {
+                    let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    let text = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let detail = text.isEmpty ? "exit code \(proc.terminationStatus)" : text
+                    self?.wordAddinLastError = "Word dev add-in exited: \(detail)"
+                }
+                self?.updateSetupState()
+            }
+        }
+
+        do {
+            try process.run()
+            wordAddinProcess = process
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1.5))
+                self?.isWordAddinStarting = false
+                self?.updateSetupState()
+            }
+        } catch {
+            isWordAddinStarting = false
+            wordAddinLastError = "Failed to start Word dev add-in: \(error.localizedDescription)"
+            updateSetupState()
+        }
+    }
+
+    func stopWordAddinDevSession() {
+        wordAddinLastError = nil
+        if let proc = wordAddinProcess, proc.isRunning {
+            proc.terminate()
+            proc.waitUntilExit()
+        }
+        wordAddinProcess = nil
+        isWordAddinStarting = false
+
+        guard let repoRoot = resolveRepoRoot() else {
+            updateSetupState()
+            return
+        }
+        let wordAddinDir = repoRoot.appending(path: "packages/word-addin")
+        let manifestPath = wordAddinDir.appending(path: "manifest.xml")
+        guard FileManager.default.fileExists(atPath: manifestPath.path()) else {
+            updateSetupState()
+            return
+        }
+
+        let stopProcess = Process()
+        stopProcess.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        stopProcess.arguments = ["pnpm", "exec", "office-addin-debugging", "stop", "manifest.xml"]
+        stopProcess.currentDirectoryURL = wordAddinDir
+        stopProcess.environment = launchEnvironment()
+        if let nullOut = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null")),
+           let nullErr = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null")) {
+            stopProcess.standardOutput = nullOut
+            stopProcess.standardError = nullErr
+        }
+
+        do {
+            try stopProcess.run()
+            stopProcess.waitUntilExit()
+        } catch {
+            wordAddinLastError = "Could not run office-addin-debugging stop: \(error.localizedDescription)"
+        }
+        updateSetupState()
+    }
+
+    private func stopWordAddinProcessOnQuit() {
+        if let proc = wordAddinProcess, proc.isRunning {
+            proc.terminate()
+        }
+        wordAddinProcess = nil
+    }
+
     private func requestJSON<T: Decodable>(path: String) async throws -> T {
         let url = baseURL.appending(path: path)
         let (data, response) = try await session.data(from: url)
@@ -236,22 +365,62 @@ final class BridgeController: NSObject, ObservableObject {
     private func resolveRepoRoot() -> URL? {
         if let configured = ProcessInfo.processInfo.environment["WORD_MCP_BRIDGE_REPO_ROOT"] {
             let url = URL(fileURLWithPath: configured, isDirectory: true)
-            if FileManager.default.fileExists(atPath: url.appending(path: "package.json").path()) {
+            if isWordMCPBridgeRepo(url) {
                 return url
             }
         }
 
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let homeCandidates = [
+            home.appending(path: "LocalDev/Word-MCP-Bridge"),
+            home.appending(path: "Code/Word-MCP-Bridge"),
+            home.appending(path: "Developer/Word-MCP-Bridge"),
+            home.appending(path: "Projects/Word-MCP-Bridge"),
+            home.appending(path: "src/Word-MCP-Bridge"),
+        ]
+        for candidate in homeCandidates where isWordMCPBridgeRepo(candidate) {
+            return candidate
+        }
+
         var current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         for _ in 0 ..< 8 {
-            let candidate = current.appending(path: "package.json")
-            if let data = try? Data(contentsOf: candidate),
-               let text = String(data: data, encoding: .utf8),
-               text.contains("\"name\": \"word-mcp-bridge\"") {
+            if isWordMCPBridgeRepo(current) {
                 return current
             }
             current.deleteLastPathComponent()
         }
         return nil
+    }
+
+    private func isWordMCPBridgeRepo(_ directory: URL) -> Bool {
+        let packageJSON = directory.appending(path: "package.json")
+        guard let data = try? Data(contentsOf: packageJSON),
+              let text = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        return text.contains("\"name\": \"word-mcp-bridge\"")
+    }
+
+    private func launchEnvironment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        let home = NSHomeDirectory()
+        let extraPaths = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "\(home)/.volta/bin",
+            "\(home)/.local/share/pnpm",
+        ]
+        let existing = env["PATH"] ?? ""
+        var segments: [String] = []
+        var seen = Set<String>()
+        for segment in extraPaths + existing.split(separator: ":").map(String.init) {
+            if !segment.isEmpty, !seen.contains(segment) {
+                seen.insert(segment)
+                segments.append(segment)
+            }
+        }
+        env["PATH"] = segments.joined(separator: ":")
+        return env
     }
 
     private func autoStartBridgeIfNeeded() {
@@ -264,6 +433,18 @@ final class BridgeController: NSObject, ObservableObject {
         }
         guard !isBridgeRunning, bridgeProcess?.isRunning != true else { return }
         startBridge()
+    }
+
+    private func autoLoadWordAddinIfNeeded() {
+        guard !hasAttemptedAutoLoadWordAddin else { return }
+        hasAttemptedAutoLoadWordAddin = true
+        guard UserDefaults.standard.object(forKey: HelperPreferences.autoLoadWordAddinOnLaunchKey) == nil
+            || UserDefaults.standard.bool(forKey: HelperPreferences.autoLoadWordAddinOnLaunchKey)
+        else {
+            return
+        }
+        guard resolveRepoRoot() != nil else { return }
+        startWordAddinDevSession()
     }
 
     private func resolvedAssetAvailability() -> HelperAssetAvailability {
