@@ -9,10 +9,10 @@ final class BridgeModelsTests: XCTestCase {
           "status": {
             "startedAt": 1710000000000,
             "uptimeMs": 42000,
-            "host": "127.0.0.1",
+            "host": "localhost",
             "port": 4017,
-            "httpUrl": "https://127.0.0.1:4017",
-            "wsUrl": "wss://127.0.0.1:4017/ws",
+            "httpUrl": "https://localhost:4017",
+            "wsUrl": "wss://localhost:4017/ws",
             "sessionCount": 1,
             "sessions": [
               {
@@ -69,6 +69,7 @@ final class BridgeModelsTests: XCTestCase {
             bridgeReachable: false,
             bridgeProcessRunning: true,
             bridgeStarting: true,
+            wordAppRunning: false,
             connectedSessionCount: 0,
             assetAvailability: .init(
                 hostedManifestURL: URL(fileURLWithPath: "/tmp/manifest.xml"),
@@ -79,5 +80,41 @@ final class BridgeModelsTests: XCTestCase {
 
         XCTAssertEqual(state.currentStepLabel, "Starting the bridge")
         XCTAssertEqual(state.currentStepSummary, "The helper launched the local bridge and is waiting for it to become reachable.")
+    }
+
+    func testSetupStatePromptsToOpenWordWhenBridgeIsReadyButWordIsClosed() {
+        let state = HelperSetupState(
+            bridgeReachable: true,
+            bridgeProcessRunning: true,
+            bridgeStarting: false,
+            wordAppRunning: false,
+            connectedSessionCount: 0,
+            assetAvailability: .init(
+                hostedManifestURL: URL(fileURLWithPath: "/tmp/manifest.xml"),
+                localManifestURL: nil,
+                setupGuideURL: nil
+            )
+        )
+
+        XCTAssertEqual(state.currentStepLabel, "Open Word")
+        XCTAssertEqual(state.currentStepSummary, "The bridge is up. Open Microsoft Word, then open the Word MCP Bridge taskpane.")
+    }
+
+    func testSetupStatePromptsToOpenTaskpaneWhenWordIsRunningWithoutSession() {
+        let state = HelperSetupState(
+            bridgeReachable: true,
+            bridgeProcessRunning: true,
+            bridgeStarting: false,
+            wordAppRunning: true,
+            connectedSessionCount: 0,
+            assetAvailability: .init(
+                hostedManifestURL: URL(fileURLWithPath: "/tmp/manifest.xml"),
+                localManifestURL: nil,
+                setupGuideURL: nil
+            )
+        )
+
+        XCTAssertEqual(state.currentStepLabel, "Open the taskpane")
+        XCTAssertEqual(state.currentStepSummary, "Word is open, but the Word MCP Bridge taskpane is not connected yet.")
     }
 }
