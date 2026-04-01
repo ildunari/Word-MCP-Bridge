@@ -93,9 +93,9 @@ private struct HelperMenuView: View {
                 .help("More actions")
             }
 
-            Label(controller.isBridgeRunning ? "Running on https://127.0.0.1:4017" : "Not reachable", systemImage: controller.isBridgeRunning ? "checkmark.circle.fill" : "xmark.circle")
-                .foregroundStyle(controller.isBridgeRunning ? .green : .secondary)
-                .accessibilityLabel(controller.isBridgeRunning ? "Bridge running on localhost port 4017" : "Bridge not reachable")
+            Label(bridgeStatusLabel, systemImage: bridgeStatusIcon)
+                .foregroundStyle(controller.setupState.bridgeReachable ? .green : .secondary)
+                .accessibilityLabel(bridgeStatusLabel)
             if let snapshot = controller.snapshot {
                 Text("Sessions: \(snapshot.status.sessionCount)  •  Uptime: \(formatDuration(snapshot.status.uptimeMs))")
                     .font(.caption)
@@ -108,6 +108,10 @@ private struct HelperMenuView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            } else {
+                Text(controller.setupState.currentStepSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if let lastError = controller.lastError {
                 Text(lastError)
@@ -127,7 +131,7 @@ private struct HelperMenuView: View {
                 metricsRow("Errors", value: totals.bridgeErrorCount)
                 metricsRow("Timeouts", value: totals.requestTimeoutCount)
                 metricsRow("Dropped", value: totals.connectionDropCount)
-                metricsRow("Pending", value: totals.pendingCount)
+                metricsRow("Pending", value: totals.pendingCount ?? 0)
             } else {
                 Text("Start the bridge or connect Word to see live totals.")
                     .font(.caption)
@@ -253,5 +257,28 @@ private struct HelperMenuView: View {
             return "Stopping..."
         }
         return controller.isBridgeRunning ? "Stop Bridge" : "Start Bridge"
+    }
+
+    private var bridgeStatusLabel: String {
+        if controller.setupState.bridgeReachable {
+            return "Reachable on https://127.0.0.1:4017"
+        }
+        if controller.setupState.bridgeStarting {
+            return "Starting bridge"
+        }
+        if controller.setupState.bridgeProcessRunning {
+            return "Bridge process running, waiting for endpoint"
+        }
+        return "Bridge not reachable"
+    }
+
+    private var bridgeStatusIcon: String {
+        if controller.setupState.bridgeReachable {
+            return "checkmark.circle.fill"
+        }
+        if controller.setupState.bridgeStarting || controller.setupState.bridgeProcessRunning {
+            return "arrow.triangle.2.circlepath.circle"
+        }
+        return "xmark.circle"
     }
 }

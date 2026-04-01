@@ -7,6 +7,8 @@ final class BridgeController: NSObject, ObservableObject {
     @Published private(set) var snapshot: HelperSnapshot?
     @Published private(set) var setupState = HelperSetupState(
         bridgeReachable: false,
+        bridgeProcessRunning: false,
+        bridgeStarting: false,
         connectedSessionCount: 0,
         assetAvailability: .unavailable
     )
@@ -27,7 +29,7 @@ final class BridgeController: NSObject, ObservableObject {
     let baseURL = URL(string: "https://127.0.0.1:4017")!
 
     var isBridgeRunning: Bool {
-        snapshot?.status.running == true
+        setupState.bridgeReachable || setupState.bridgeProcessRunning || isStarting
     }
 
     deinit {
@@ -63,7 +65,7 @@ final class BridgeController: NSObject, ObservableObject {
         } catch {
             previousSnapshot = snapshot
             snapshot = nil
-            lastError = error.localizedDescription
+            lastError = describe(error: error)
             updateSetupState()
             maybeNotifyOnStateTransition()
         }
@@ -71,6 +73,7 @@ final class BridgeController: NSObject, ObservableObject {
 
     func startBridge() {
         guard bridgeProcess == nil || bridgeProcess?.isRunning == false else { return }
+        guard snapshot == nil else { return }
         guard let repoRoot = resolveRepoRoot() else {
             lastError = "Could not locate the Word-MCP-Bridge repo root."
             return
@@ -88,8 +91,9 @@ final class BridgeController: NSObject, ObservableObject {
                 self?.bridgeProcess = nil
                 self?.isStarting = false
                 if process.terminationStatus != 0 {
-                    self?.lastError = "Bridge exited with status \(process.terminationStatus)."
+                    self?.lastError = self?.friendlyBridgeExitMessage(status: process.terminationStatus)
                 }
+                self?.updateSetupState()
             }
         }
 
@@ -104,10 +108,15 @@ final class BridgeController: NSObject, ObservableObject {
                 try? await Task.sleep(for: .seconds(2))
                 self?.isStarting = false
                 await self?.refresh()
+                if self?.bridgeProcess?.isRunning == true, self?.snapshot == nil, self?.lastError == nil {
+                    self?.lastError = "The bridge process started, but the local status endpoint is not reachable yet."
+                }
+                self?.updateSetupState()
             }
         } catch {
             isStarting = false
             lastError = "Failed to start bridge: \(error.localizedDescription)"
+            updateSetupState()
         }
     }
 
@@ -120,6 +129,9 @@ final class BridgeController: NSObject, ObservableObject {
             do {
                 var request = URLRequest(url: baseURL.appending(path: "shutdown"))
                 request.httpMethod = "POST"
+                if let authToken = bridgeAuthToken() {
+                    request.setValue(authToken, forHTTPHeaderField: "X-Office-Bridge-Token")
+                }
                 let (_, response) = try await session.data(for: request)
                 if let http = response as? HTTPURLResponse, !(200 ..< 300).contains(http.statusCode) {
                     throw URLError(.badServerResponse)
@@ -291,9 +303,53 @@ final class BridgeController: NSObject, ObservableObject {
         let assetAvailability = resolvedAssetAvailability()
         setupState = HelperSetupState(
             bridgeReachable: snapshot != nil,
+            bridgeProcessRunning: bridgeProcess?.isRunning == true,
+            bridgeStarting: isStarting,
             connectedSessionCount: snapshot?.status.sessionCount ?? 0,
             assetAvailability: assetAvailability
         )
+    }
+
+    private func bridgeAuthToken() -> String? {
+        if let envToken = ProcessInfo.processInfo.environment["OFFICE_BRIDGE_TOKEN"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !envToken.isEmpty {
+            return envToken
+        }
+
+        let tokenURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appending(path: "office-agents-bridge", directoryHint: .isDirectory)
+            .appending(path: "auth-token", directoryHint: .notDirectory)
+        guard let token = try? String(contentsOf: tokenURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !token.isEmpty else {
+            return nil
+        }
+        return token
+    }
+
+    private func friendlyBridgeExitMessage(status: Int32) -> String {
+        if status != 0 {
+            return "Bridge exited with status \(status). If port 4017 is already in use, stop the existing bridge server before starting a new one."
+        }
+        return "Bridge exited."
+    }
+
+    private func describe(error: Error) -> String {
+        if error is DecodingError {
+            return "Bridge status response was not in the format the helper expected."
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cannotConnectToHost, .cannotFindHost, .timedOut:
+                return "Could not connect to the local bridge server."
+            case .badServerResponse:
+                return "The bridge responded unexpectedly. Make sure the local bridge server is running on port 4017 and using the same auth token."
+            default:
+                break
+            }
+        }
+        return error.localizedDescription
     }
 
     private func requestNotificationsIfNeeded() async {

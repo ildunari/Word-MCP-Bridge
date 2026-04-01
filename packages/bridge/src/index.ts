@@ -1,5 +1,7 @@
 export {
   type OfficeBridgeClientOptions,
+  type OfficeBridgeConnectionPhase,
+  type OfficeBridgeConnectionStatus,
   type OfficeBridgeController,
   startOfficeBridge,
 } from "./client.js";
@@ -7,6 +9,8 @@ export { DOM_QUERIES } from "./dom-queries.js";
 export {
   bridgeToolExecutionResultToMcpResult,
   createOfficeBridgeMcpServer,
+  describeBridgeConnectionFailure,
+  describeMissingBridgeSession,
 } from "./mcp.js";
 export {
   BRIDGE_PROTOCOL_VERSION,

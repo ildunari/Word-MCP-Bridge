@@ -25,6 +25,62 @@ function buildJsonResult(data: unknown) {
   };
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+  return String(error || "Unknown bridge error");
+}
+
+export function describeBridgeConnectionFailure(
+  error: unknown,
+  baseUrl = "https://localhost:4017",
+): string {
+  const message = errorMessage(error);
+  const code =
+    typeof error === "object" && error && "code" in error
+      ? String((error as { code?: string }).code ?? "")
+      : "";
+  const lower = message.toLowerCase();
+
+  if (
+    code === "ECONNREFUSED" ||
+    lower.includes("econnrefused") ||
+    lower.includes("cannot connect") ||
+    lower.includes("fetch failed")
+  ) {
+    return `Word MCP Bridge is not reachable at ${baseUrl}. Start the local bridge server, then open Word and the Word MCP Bridge taskpane before retrying.`;
+  }
+  if (lower.includes("timed out")) {
+    return `Word MCP Bridge at ${baseUrl} did not respond in time. Make sure the bridge server is running locally and try again.`;
+  }
+  if (lower.includes("unauthorized") || lower.includes("forbidden")) {
+    return "Word MCP Bridge rejected the request. Make sure the MCP host is using the same bridge auth token as the local bridge server.";
+  }
+  return `Word MCP Bridge request failed: ${message}`;
+}
+
+export function describeMissingBridgeSession() {
+  return "Word MCP Bridge is running, but no live Office sessions are connected. Open Word and the Word MCP Bridge taskpane, then retry.";
+}
+
+function shouldRewriteAsConnectionFailure(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  const code =
+    typeof error === "object" && error && "code" in error
+      ? String((error as { code?: string }).code ?? "")
+      : "";
+  return (
+    code === "ECONNREFUSED" ||
+    message.includes("econnrefused") ||
+    message.includes("cannot connect") ||
+    message.includes("fetch failed") ||
+    message.includes("timed out") ||
+    message.includes("unauthorized") ||
+    message.includes("forbidden")
+  );
+}
+
 export function bridgeToolExecutionResultToMcpResult(
   result: BridgeToolExecutionResult,
 ) {
@@ -69,32 +125,71 @@ export async function createOfficeBridgeMcpServer(
     },
   );
 
+  async function bridgeRequest<T>(
+    method: string,
+    pathname: string,
+    body?: unknown,
+  ): Promise<T> {
+    try {
+      return await requestJson<T>(method, pathname, body, options);
+    } catch (error) {
+      if (shouldRewriteAsConnectionFailure(error)) {
+        throw new Error(describeBridgeConnectionFailure(error, options.baseUrl));
+      }
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(errorMessage(error));
+    }
+  }
+
   async function fetchSessions() {
-    const response = await requestJson<{
+    const response = await bridgeRequest<{
       ok: true;
       sessions: BridgeSessionRecord[];
-    }>("GET", "/sessions", undefined, options);
+    }>("GET", "/sessions");
     return response.sessions;
+  }
+
+  async function fetchBridgeStatus() {
+    const response = await bridgeRequest<{
+      ok: true;
+      status: unknown;
+    }>("GET", "/status");
+    return response.status;
   }
 
   async function resolveSession(selector?: string) {
     const sessions = await fetchSessions();
     if (sessions.length === 0) {
-      throw new Error("No bridge sessions available.");
+      throw new Error(describeMissingBridgeSession());
     }
     if (!selector) {
       if (sessions.length === 1) return sessions[0];
-      throw new Error("Multiple bridge sessions available. Pass a session selector.");
+      throw new Error(
+        'Multiple bridge sessions are connected. Pass a session selector, or call "list_sessions" first.',
+      );
     }
     const matches = findMatchingSession(sessions, selector);
     if (matches.length === 1) return matches[0];
     if (matches.length === 0) {
-      throw new Error(`No bridge session matches "${selector}".`);
+      throw new Error(
+        `No bridge session matches "${selector}". Call "list_sessions" to inspect the available session IDs first.`,
+      );
     }
     throw new Error(
-      `Bridge session selector "${selector}" is ambiguous: ${matches.map((session) => session.snapshot.sessionId).join(", ")}`,
+      `Bridge session selector "${selector}" is ambiguous. Matching sessions: ${matches.map((session) => session.snapshot.sessionId).join(", ")}`,
     );
   }
+
+  server.registerTool(
+    "get_bridge_status",
+    {
+      description:
+        "Check whether the local Word MCP Bridge server is reachable, even when no Office sessions are connected yet.",
+    },
+    async () => buildJsonResult({ status: await fetchBridgeStatus() }),
+  );
 
   server.registerTool(
     "list_sessions",
@@ -115,14 +210,13 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{ ok: true; result: unknown }>(
+      const response = await bridgeRequest<{ ok: true; result: unknown }>(
         "POST",
         "/rpc",
         {
           sessionId: resolved.snapshot.sessionId,
           method: "refresh_session",
         },
-        options,
       );
       return buildJsonResult(response.result);
     },
@@ -139,14 +233,13 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{ ok: true; result: unknown }>(
+      const response = await bridgeRequest<{ ok: true; result: unknown }>(
         "POST",
         "/rpc",
         {
           sessionId: resolved.snapshot.sessionId,
           method: "refresh_session",
         },
-        options,
       );
       const snapshot = response.result as {
         gateway?: { liveContext?: unknown };
@@ -169,14 +262,12 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session, limit }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{
+      const response = await bridgeRequest<{
         ok: true;
         events: unknown[];
       }>(
         "GET",
         `/sessions/${encodeURIComponent(resolved.snapshot.sessionId)}/events?limit=${limit ?? 20}`,
-        undefined,
-        options,
       );
       return buildJsonResult({
         sessionId: resolved.snapshot.sessionId,
@@ -198,14 +289,13 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session, toolName, args }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{
+      const response = await bridgeRequest<{
         ok: true;
         result: BridgeToolExecutionResult;
       }>(
         "POST",
         `/sessions/${encodeURIComponent(resolved.snapshot.sessionId)}/tools/${encodeURIComponent(toolName)}`,
         { args: args ?? {} },
-        options,
       );
       return bridgeToolExecutionResultToMcpResult(response.result);
     },
@@ -224,7 +314,7 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session, code, explanation }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{ ok: true; result: unknown }>(
+      const response = await bridgeRequest<{ ok: true; result: unknown }>(
         "POST",
         "/rpc",
         {
@@ -232,7 +322,6 @@ export async function createOfficeBridgeMcpServer(
           method: "execute_unsafe_office_js",
           params: { code, explanation },
         },
-        options,
       );
       return buildJsonResult(response.result);
     },
@@ -249,7 +338,7 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session, prefix }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{ ok: true; result: unknown }>(
+      const response = await bridgeRequest<{ ok: true; result: unknown }>(
         "POST",
         "/rpc",
         {
@@ -257,7 +346,6 @@ export async function createOfficeBridgeMcpServer(
           method: "vfs_list",
           params: { prefix },
         },
-        options,
       );
       return buildJsonResult(response.result);
     },
@@ -275,7 +363,7 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session, path, encoding }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{ ok: true; result: unknown }>(
+      const response = await bridgeRequest<{ ok: true; result: unknown }>(
         "POST",
         "/rpc",
         {
@@ -283,7 +371,6 @@ export async function createOfficeBridgeMcpServer(
           method: "vfs_read",
           params: { path, encoding },
         },
-        options,
       );
       return buildJsonResult(response.result);
     },
@@ -302,7 +389,7 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session, path, text, dataBase64 }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{ ok: true; result: unknown }>(
+      const response = await bridgeRequest<{ ok: true; result: unknown }>(
         "POST",
         "/rpc",
         {
@@ -310,7 +397,6 @@ export async function createOfficeBridgeMcpServer(
           method: "vfs_write",
           params: { path, text, dataBase64 },
         },
-        options,
       );
       return buildJsonResult(response.result);
     },
@@ -327,7 +413,7 @@ export async function createOfficeBridgeMcpServer(
     },
     async ({ session, path }) => {
       const resolved = await resolveSession(session);
-      const response = await requestJson<{ ok: true; result: unknown }>(
+      const response = await bridgeRequest<{ ok: true; result: unknown }>(
         "POST",
         "/rpc",
         {
@@ -335,7 +421,6 @@ export async function createOfficeBridgeMcpServer(
           method: "vfs_delete",
           params: { path },
         },
-        options,
       );
       return buildJsonResult(response.result);
     },

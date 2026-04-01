@@ -14,5 +14,10 @@ let package = Package(
             name: "WordMCPBridgeHelper",
             path: "Sources/WordMCPBridgeHelper"
         ),
+        .testTarget(
+            name: "WordMCPBridgeHelperTests",
+            dependencies: ["WordMCPBridgeHelper"],
+            path: "Tests/WordMCPBridgeHelperTests"
+        ),
     ]
 )
