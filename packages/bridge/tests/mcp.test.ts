@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { bridgeToolExecutionResultToMcpResult } from "../src/mcp";
+import {
+  bridgeToolExecutionResultToMcpResult,
+  describeBridgeConnectionFailure,
+  describeMissingBridgeSession,
+} from "../src/mcp";
 
 describe("bridgeToolExecutionResultToMcpResult", () => {
   it("preserves text and images for MCP tool responses", () => {
@@ -35,5 +39,21 @@ describe("bridgeToolExecutionResultToMcpResult", () => {
         text: JSON.stringify({ body: "hello" }, null, 2),
       },
     ]);
+  });
+
+  it("describes bridge connection failures with an actionable message", () => {
+    const error = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:4017"), {
+      code: "ECONNREFUSED",
+    });
+
+    expect(describeBridgeConnectionFailure(error, "https://localhost:4017")).toContain(
+      "Start the local bridge server",
+    );
+  });
+
+  it("describes the zero-session case with next steps", () => {
+    expect(describeMissingBridgeSession()).toContain(
+      "Open Word and the Word MCP Bridge taskpane",
+    );
   });
 });

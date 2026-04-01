@@ -83,7 +83,32 @@ export interface OfficeBridgeController {
     event: K,
     payload: BridgeEventPayloads[K],
   ) => void;
+  getStatus: () => OfficeBridgeConnectionStatus;
+  subscribe: (
+    listener: (status: OfficeBridgeConnectionStatus) => void,
+  ) => () => void;
   stop: () => void;
+}
+
+export type OfficeBridgeConnectionPhase =
+  | "disabled"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected";
+
+export interface OfficeBridgeStatusError {
+  message: string;
+  at: number;
+}
+
+export interface OfficeBridgeConnectionStatus {
+  enabled: boolean;
+  serverUrl: string;
+  phase: OfficeBridgeConnectionPhase;
+  isConnected: boolean;
+  hasConnected: boolean;
+  lastError: OfficeBridgeStatusError | null;
 }
 
 interface PendingState {
@@ -92,6 +117,7 @@ interface PendingState {
   reconnectTimer: number | null;
   reconnectDelayMs: number;
   snapshot: BridgeSessionSnapshot | null;
+  status: OfficeBridgeConnectionStatus;
 }
 
 const BRIDGE_ENABLE_QUERY_KEY = "office_bridge";
@@ -243,6 +269,10 @@ function scheduleMicrotask(action: () => void) {
     .catch(() => undefined);
 }
 
+function bridgeConnectionErrorMessage(): string {
+  return "Could not connect to the bridge server.";
+}
+
 export function startOfficeBridge(
   options: OfficeBridgeClientOptions,
 ): OfficeBridgeController {
@@ -255,14 +285,43 @@ export function startOfficeBridge(
     reconnectTimer: null,
     reconnectDelayMs: options.reconnectBaseMs ?? 1_000,
     snapshot: null,
+    status: {
+      enabled,
+      serverUrl: resolveServerUrl(options.serverUrl),
+      phase: enabled ? "connecting" : "disabled",
+      isConnected: false,
+      hasConnected: false,
+      lastError: null,
+    },
   };
 
   let queue = Promise.resolve<unknown>(undefined);
   let consoleRestore: (() => void) | null = null;
+  const statusListeners = new Set<
+    (status: OfficeBridgeConnectionStatus) => void
+  >();
 
-  const serverUrl = resolveServerUrl(options.serverUrl);
+  const serverUrl = state.status.serverUrl;
   const reconnectBaseMs = options.reconnectBaseMs ?? 1_000;
   const reconnectMaxMs = options.reconnectMaxMs ?? 10_000;
+
+  const publishStatus = (next: Partial<OfficeBridgeConnectionStatus>) => {
+    const merged: OfficeBridgeConnectionStatus = {
+      ...state.status,
+      ...next,
+    };
+    const changed =
+      merged.phase !== state.status.phase ||
+      merged.isConnected !== state.status.isConnected ||
+      merged.hasConnected !== state.status.hasConnected ||
+      merged.lastError?.message !== state.status.lastError?.message ||
+      merged.lastError?.at !== state.status.lastError?.at;
+    state.status = merged;
+    if (!changed) return;
+    for (const listener of statusListeners) {
+      listener({ ...merged });
+    }
+  };
 
   const send = (message: BridgeWireMessage) => {
     if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
@@ -684,6 +743,10 @@ export function startOfficeBridge(
 
   const connect = async () => {
     if (state.stopped) return;
+    publishStatus({
+      phase: state.status.hasConnected ? "reconnecting" : "connecting",
+      isConnected: false,
+    });
 
     const socket = new WebSocket(serverUrl);
     state.socket = socket;
@@ -704,8 +767,23 @@ export function startOfficeBridge(
             serverUrl,
             sessionId: snapshot.sessionId,
           });
+          publishStatus({
+            phase: "connected",
+            isConnected: true,
+            hasConnected: true,
+            lastError: null,
+          });
         })
         .catch((error) => {
+          publishStatus({
+            lastError: {
+              message:
+                error instanceof Error && error.message.trim()
+                  ? error.message
+                  : bridgeConnectionErrorMessage(),
+              at: Date.now(),
+            },
+          });
           sendEvent("bridge_error", {
             message: "Failed to build bridge snapshot",
             error: toBridgeError(error),
@@ -723,9 +801,19 @@ export function startOfficeBridge(
       if (state.socket === socket) {
         state.socket = null;
       }
-      if (state.stopped) return;
+      if (state.stopped) {
+        publishStatus({
+          phase: "disconnected",
+          isConnected: false,
+        });
+        return;
+      }
 
       clearReconnectTimer();
+      publishStatus({
+        phase: "reconnecting",
+        isConnected: false,
+      });
       state.reconnectTimer = window.setTimeout(() => {
         connect().catch(() => undefined);
       }, state.reconnectDelayMs);
@@ -736,6 +824,12 @@ export function startOfficeBridge(
     });
 
     socket.addEventListener("error", () => {
+      publishStatus({
+        lastError: {
+          message: bridgeConnectionErrorMessage(),
+          at: Date.now(),
+        },
+      });
       socket.close();
     });
   };
@@ -841,6 +935,14 @@ export function startOfficeBridge(
       if (!enabled || state.stopped) return;
       sendEvent(event, payload);
     },
+    getStatus: () => ({ ...state.status }),
+    subscribe: (listener) => {
+      statusListeners.add(listener);
+      listener({ ...state.status });
+      return () => {
+        statusListeners.delete(listener);
+      };
+    },
     stop: () => {
       state.stopped = true;
       clearReconnectTimer();
@@ -852,6 +954,10 @@ export function startOfficeBridge(
         state.socket.close();
         state.socket = null;
       }
+      publishStatus({
+        phase: enabled ? "disconnected" : "disabled",
+        isConnected: false,
+      });
       if (
         (
           window as typeof window & {

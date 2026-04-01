@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    type OfficeBridgeConnectionStatus,
     type OfficeBridgeController,
     startOfficeBridge,
   } from "@word-mcp-bridge/bridge/client";
@@ -10,6 +11,7 @@
   } from "@word-mcp-bridge/bridge/protocol";
   import {
     createWordBridgeAdapter,
+    isBridgeForcedEnabled,
     resolveConfiguredBridgeUrl,
   } from "../../lib/bridge-adapter";
   import { bindOfficeDocumentHandler } from "../../lib/components/office-document-events";
@@ -17,6 +19,7 @@
     attachWordLiveContextBridge,
     WORD_TRACKING_MODE_CHANGED_EVENT,
   } from "../../lib/live-context";
+  import { deriveTaskpaneConnectionView } from "../../lib/taskpane-connection";
 
   declare const Office: any;
 
@@ -28,12 +31,21 @@
   let controller: OfficeBridgeController | null = null;
   let snapshot: BridgeSessionSnapshot | null = null;
   let liveContext: BridgeLiveContext | null = null;
-  let bridgeEnabled = true;
+  let bridgeEnabled = isBridgeForcedEnabled();
   let bridgeUrl = resolveConfiguredBridgeUrl();
+  let bridgeStatus: OfficeBridgeConnectionStatus = {
+    enabled: bridgeEnabled,
+    serverUrl: bridgeUrl,
+    phase: bridgeEnabled ? "connecting" : "disabled",
+    isConnected: false,
+    hasConnected: false,
+    lastError: null,
+  };
   let isRefreshing = false;
   let lastRefreshLabel = "Never";
   let errorMessage = "";
   let activity: ActivityItem[] = [];
+  $: connectionView = deriveTaskpaneConnectionView({ snapshot, bridgeStatus });
   const mcpCommand = "office-bridge mcp-serve";
   const localSetupCommands = [
     "pnpm setup:word",
@@ -104,15 +116,11 @@
   }
 
   function connectionLabel(): string {
-    if (snapshot) return "Connected";
-    if (controller?.enabled) return "Waiting for bridge";
-    return "Disabled";
+    return connectionView.statusLabel;
   }
 
   function connectionSummary(): string {
-    if (snapshot) return "A live Word taskpane session is available to CLI and MCP clients.";
-    if (controller?.enabled) return "The add-in is ready and polling for a local bridge session.";
-    return "Bridge mode is disabled by query params or saved configuration.";
+    return connectionView.subtitle;
   }
 
   function documentHeadline(): string {
@@ -140,6 +148,10 @@
       enabled: bridgeEnabled,
       serverUrl: bridgeUrl,
       forwardConsole: false,
+    });
+    bridgeStatus = controller.getStatus();
+    const unsubscribeBridgeStatus = controller.subscribe((status) => {
+      bridgeStatus = status;
     });
 
     const detachBridgeEvents = attachWordLiveContextBridge(controller);
@@ -185,6 +197,7 @@
 
     return () => {
       detachBridgeEvents();
+      unsubscribeBridgeStatus();
       detachSelectionHandler();
       window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -205,15 +218,14 @@
         <p class="eyebrow">Word MCP Bridge</p>
         <h1>Live Word connector</h1>
         <p class="lede">
-          This add-in keeps a live bridge session open so local CLI and MCP clients can inspect
-          Word context and run privileged Office.js commands.
+          {connectionView.subtitle}
         </p>
       </div>
       <div class="hero-actions">
         <button on:click={() => void refreshStatus()} disabled={!controller || isRefreshing}>
           {isRefreshing ? "Refreshing..." : "Refresh"}
         </button>
-        <span class:healthy={Boolean(snapshot)} class="status-pill">
+        <span class:healthy={Boolean(snapshot) && bridgeStatus.isConnected} class="status-pill">
           {connectionLabel()}
         </span>
       </div>
@@ -260,8 +272,7 @@
       <section class="panel panel-wide setup-panel">
         <h2>How to connect</h2>
         <p class="caption">
-          This taskpane is waiting for a live bridge session. Start the bridge server, launch
-          the Word add-in, and then reopen or refresh this pane.
+          {connectionSummary()}
         </p>
         <div class="setup-grid">
           <div class="setup-card">
@@ -298,6 +309,10 @@
         <div>
           <dt>Enabled</dt>
           <dd><span class:healthy-text={controller?.enabled}>{controller?.enabled ? "yes" : "no"}</span></dd>
+        </div>
+        <div>
+          <dt>Bridge phase</dt>
+          <dd>{bridgeStatus.phase}</dd>
         </div>
         <div>
           <dt>Bridge URL</dt>

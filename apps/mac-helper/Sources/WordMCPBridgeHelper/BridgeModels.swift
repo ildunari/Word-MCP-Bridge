@@ -6,23 +6,35 @@ struct BridgeServerStatusResponse: Decodable {
 }
 
 struct BridgeServerStatusPayload: Decodable {
-    let running: Bool
-    let startedAt: String
+    let startedAt: Int
     let uptimeMs: Int
+    let host: String
+    let port: Int
+    let httpUrl: String
+    let wsUrl: String
     let sessionCount: Int
     let sessions: [BridgeSessionPayload]
     let totals: BridgeMetricsPayload
+
+    var running: Bool { true }
 }
 
 struct BridgeSessionPayload: Decodable, Identifiable {
-    let sessionId: String
-    let app: String
-    let connectedAt: String
-    let lastSeenAt: String
-    let capabilities: [String]
-    let metadata: BridgeMetadataPayload?
+    let snapshot: BridgeSessionSnapshotPayload
+    let connectedAt: Int
+    let lastSeenAt: Int
+    let pendingCount: Int
     let metrics: BridgeMetricsPayload
 
+    var sessionId: String { snapshot.sessionId }
+    var app: String { snapshot.app }
+    var capabilities: [String] { snapshot.gateway?.capabilities ?? [] }
+    var metadata: BridgeMetadataPayload? {
+        snapshot.documentMetadata ?? BridgeMetadataPayload(
+            documentId: snapshot.documentId,
+            title: nil
+        )
+    }
     var id: String { sessionId }
 }
 
@@ -31,14 +43,27 @@ struct BridgeMetadataPayload: Decodable {
     let title: String?
 }
 
+struct BridgeSessionSnapshotPayload: Decodable {
+    let sessionId: String
+    let app: String
+    let documentId: String?
+    let documentMetadata: BridgeMetadataPayload?
+    let gateway: BridgeGatewayPayload?
+}
+
+struct BridgeGatewayPayload: Decodable {
+    let capabilities: [String]
+}
+
 struct BridgeMetricsPayload: Decodable {
     let eventCount: Int
     let toolCallCount: Int
     let bridgeErrorCount: Int
     let requestTimeoutCount: Int
     let connectionDropCount: Int
-    let disconnectedSessionCount: Int
-    let pendingCount: Int
+    let disconnectedSessionCount: Int?
+    let connectedSessionCount: Int?
+    let pendingCount: Int?
 }
 
 struct HelperSnapshot {
@@ -89,6 +114,8 @@ struct HelperAssetAvailability {
 
 struct HelperSetupState {
     let bridgeReachable: Bool
+    let bridgeProcessRunning: Bool
+    let bridgeStarting: Bool
     let connectedSessionCount: Int
     let assetAvailability: HelperAssetAvailability
 
@@ -104,8 +131,11 @@ struct HelperSetupState {
         if !assetAvailability.hasHostedManifest {
             return "Install assets missing"
         }
+        if bridgeStarting {
+            return "Starting the bridge"
+        }
         if !bridgeReachable {
-            return "Start the bridge"
+            return bridgeProcessRunning ? "Waiting for the bridge" : "Start the bridge"
         }
         if !hasWordSession {
             return "Open Word and the taskpane"
@@ -117,8 +147,13 @@ struct HelperSetupState {
         if !assetAvailability.hasHostedManifest {
             return "The helper could not find the hosted add-in manifest yet."
         }
+        if bridgeStarting {
+            return "The helper launched the local bridge and is waiting for it to become reachable."
+        }
         if !bridgeReachable {
-            return "Start the local bridge so Word can connect to it."
+            return bridgeProcessRunning
+                ? "The bridge process is running, but the local status endpoint is not reachable yet."
+                : "Start the local bridge so Word can connect to it."
         }
         if !hasWordSession {
             return "The bridge is up. Next, open Word and launch the Word MCP Bridge taskpane."

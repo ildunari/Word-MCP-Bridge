@@ -226,4 +226,62 @@ describe("bridge client", () => {
 
     controller.stop();
   });
+
+  it("reports reconnecting bridge state after a socket error", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const controller = startOfficeBridge({
+      app: "word",
+      adapter: { ...adapter },
+      enabled: true,
+      reconnectBaseMs: 50,
+    });
+
+    await vi.waitFor(() => {
+      expect(controller.getStatus().phase).toBe("connected");
+    });
+
+    FakeWebSocket.instances[0]?.emit("error");
+
+    await vi.waitFor(() => {
+      expect(controller.getStatus().phase).toBe("reconnecting");
+    });
+
+    expect(controller.getStatus().lastError?.message).toContain(
+      "Could not connect to the bridge server",
+    );
+
+    controller.stop();
+  });
+
+  it("notifies subscribers when the bridge connection phase changes", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const controller = startOfficeBridge({
+      app: "word",
+      adapter: { ...adapter },
+      enabled: true,
+      reconnectBaseMs: 50,
+    });
+    const observedPhases: string[] = [];
+
+    const unsubscribe = controller.subscribe((status) => {
+      observedPhases.push(status.phase);
+    });
+
+    await vi.waitFor(() => {
+      expect(controller.getStatus().phase).toBe("connected");
+    });
+
+    FakeWebSocket.instances[0]?.emit("error");
+
+    await vi.waitFor(() => {
+      expect(controller.getStatus().phase).toBe("reconnecting");
+    });
+
+    unsubscribe();
+    controller.stop();
+
+    expect(observedPhases).toContain("connecting");
+    expect(observedPhases).toContain("connected");
+    expect(observedPhases).toContain("reconnecting");
+  });
 });
