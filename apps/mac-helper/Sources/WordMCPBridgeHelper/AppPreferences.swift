@@ -4,6 +4,7 @@ import SwiftUI
 
 enum HelperPreferences {
     static let autoStartBridgeOnLaunchKey = "autoStartBridgeOnLaunch"
+    static let autoLoadWordAddinOnLaunchKey = "autoLoadWordAddinOnLaunch"
     static let notificationsEnabledKey = "notificationsEnabled"
     static let hasCompletedOnboardingKey = "hasCompletedOnboarding"
 }
@@ -24,6 +25,7 @@ enum LaunchAtLoginManager {
 
 struct SettingsView: View {
     @AppStorage(HelperPreferences.autoStartBridgeOnLaunchKey) private var autoStartBridgeOnLaunch = true
+    @AppStorage(HelperPreferences.autoLoadWordAddinOnLaunchKey) private var autoLoadWordAddinOnLaunch = true
     @AppStorage(HelperPreferences.notificationsEnabledKey) private var notificationsEnabled = true
     @State private var launchAtLoginEnabled = LaunchAtLoginManager.isEnabled()
     @State private var launchAtLoginError: String?
@@ -40,6 +42,13 @@ struct SettingsView: View {
                 Text("When enabled, opening the helper also starts the local bridge automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("Auto-load Word dev add-in when helper opens", isOn: $autoLoadWordAddinOnLaunch)
+                Text(
+                    "When the Word-MCP-Bridge repo is on this Mac, runs office-addin-debugging to sideload the local manifest and start the dev server (requires Node and pnpm on PATH)."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Section("Notifications") {
@@ -50,8 +59,8 @@ struct SettingsView: View {
             }
 
             Section("Notes") {
-                Text("Word still needs the Word MCP Bridge add-in installed once inside Word.")
-                Text("After that, your normal flow can be: open the helper, open Word, open the taskpane.")
+                Text("Hosted installs: add the add-in once from the hosted manifest, then use Word as usual.")
+                Text("Local dev: enable auto-load above or use “Load Word dev add-in” in the menu so Word sideloads from this repo.")
             }
 
             if let launchAtLoginError {

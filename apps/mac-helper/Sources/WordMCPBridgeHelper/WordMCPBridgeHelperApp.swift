@@ -25,7 +25,7 @@ struct WordMCPBridgeHelperApp: App {
     }
 
     private var menuBarSymbol: String {
-        if controller.isStarting || controller.isStopping || controller.isLoading {
+        if controller.isStarting || controller.isStopping || controller.isLoading || controller.isWordAddinStarting {
             return "arrow.triangle.2.circlepath.circle"
         }
         return controller.isBridgeRunning ? "wave.3.right.circle.fill" : "wave.3.right.circle"
@@ -60,7 +60,7 @@ private struct HelperMenuView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Refresh bridge status")
-                .disabled(controller.isLoading || controller.isStarting)
+                .disabled(controller.isLoading || controller.isStarting || controller.isWordAddinStarting)
 
                 Menu {
                     Button(didCopyConfig ? "Copied MCP Config" : "Copy MCP Config") {
@@ -118,6 +118,12 @@ private struct HelperMenuView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                     .accessibilityLabel("Error: \(lastError)")
+            }
+            if let wordErr = controller.wordAddinLastError {
+                Text(wordErr)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityLabel("Word add-in: \(wordErr)")
             }
         }
     }
@@ -221,7 +227,52 @@ private struct HelperMenuView: View {
                 }
                 .buttonStyle(.bordered)
             }
+
+            Label(wordAddinDevStatus, systemImage: wordAddinDevIcon)
+                .font(.caption)
+                .foregroundStyle(controller.isWordAddinDevRunning ? .green : .secondary)
+
+            HStack(spacing: 8) {
+                Button(wordAddinLoadTitle) {
+                    controller.startWordAddinDevSession()
+                }
+                .buttonStyle(.bordered)
+                .disabled(controller.isWordAddinStarting || controller.isWordAddinDevRunning)
+
+                Button("Stop dev add-in") {
+                    controller.stopWordAddinDevSession()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!controller.isWordAddinDevRunning)
+            }
         }
+    }
+
+    private var wordAddinDevStatus: String {
+        if controller.isWordAddinStarting {
+            return "Starting Word dev add-in…"
+        }
+        if controller.isWordAddinDevRunning {
+            return "Word dev add-in session is running (sideload + dev server)."
+        }
+        return "Word dev add-in is not running."
+    }
+
+    private var wordAddinDevIcon: String {
+        if controller.isWordAddinStarting {
+            return "arrow.triangle.2.circlepath"
+        }
+        return controller.isWordAddinDevRunning ? "puzzlepiece.extension.fill" : "puzzlepiece.extension"
+    }
+
+    private var wordAddinLoadTitle: String {
+        if controller.isWordAddinStarting {
+            return "Starting…"
+        }
+        if controller.isWordAddinDevRunning {
+            return "Dev add-in running"
+        }
+        return "Load Word dev add-in"
     }
 
     private func metricsRow(_ label: String, value: Int) -> some View {
