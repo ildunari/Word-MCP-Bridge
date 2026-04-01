@@ -116,6 +116,7 @@ struct HelperSetupState {
     let bridgeReachable: Bool
     let bridgeProcessRunning: Bool
     let bridgeStarting: Bool
+    let wordAppRunning: Bool
     let connectedSessionCount: Int
     let assetAvailability: HelperAssetAvailability
 
@@ -138,7 +139,7 @@ struct HelperSetupState {
             return bridgeProcessRunning ? "Waiting for the bridge" : "Start the bridge"
         }
         if !hasWordSession {
-            return "Open Word and the taskpane"
+            return wordAppRunning ? "Open the taskpane" : "Open Word"
         }
         return "Ready to use"
     }
@@ -156,7 +157,9 @@ struct HelperSetupState {
                 : "Start the local bridge so Word can connect to it."
         }
         if !hasWordSession {
-            return "The bridge is up. Next, open Word and launch the Word MCP Bridge taskpane."
+            return wordAppRunning
+                ? "Word is open, but the Word MCP Bridge taskpane is not connected yet."
+                : "The bridge is up. Open Microsoft Word, then open the Word MCP Bridge taskpane."
         }
         return "A live Word session is connected. Your CLI and MCP hosts can attach now."
     }

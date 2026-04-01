@@ -114,7 +114,9 @@ private struct OnboardingView: View {
                 isReady: controller.setupState.hasWordSession,
                 summary: controller.setupState.hasWordSession
                     ? "A live Word session is connected."
-                    : "Open Word and launch the Word MCP Bridge taskpane."
+                    : controller.isWordRunning
+                        ? "Word is open, but the Word MCP Bridge taskpane is not connected yet."
+                        : "Word is not open yet. Open Word, then launch the Word MCP Bridge taskpane."
             )
         }
         .padding(18)

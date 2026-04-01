@@ -166,7 +166,7 @@ private struct HelperMenuView: View {
                         .foregroundStyle(.tertiary)
                 }
             } else {
-                Text("Open the Word add-in task pane to register a session.")
+                Text(noSessionSummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -255,7 +255,10 @@ private struct HelperMenuView: View {
         if controller.isWordAddinDevRunning {
             return "Word dev add-in session is running (sideload + dev server)."
         }
-        return "Word dev add-in is not running."
+        if controller.isWordRunning {
+            return "Word is open. Open the Word MCP Bridge taskpane if you want a live session."
+        }
+        return "Word is not open. Open Word when you want to connect the add-in."
     }
 
     private var wordAddinDevIcon: String {
@@ -312,7 +315,7 @@ private struct HelperMenuView: View {
 
     private var bridgeStatusLabel: String {
         if controller.setupState.bridgeReachable {
-            return "Reachable on https://127.0.0.1:4017"
+            return "Reachable on https://localhost:4017"
         }
         if controller.setupState.bridgeStarting {
             return "Starting bridge"
@@ -331,5 +334,15 @@ private struct HelperMenuView: View {
             return "arrow.triangle.2.circlepath.circle"
         }
         return "xmark.circle"
+    }
+
+    private var noSessionSummary: String {
+        if !controller.setupState.bridgeReachable {
+            return "Start the bridge first, then open Word and the taskpane."
+        }
+        if controller.isWordRunning {
+            return "Word is open, but the Word MCP Bridge taskpane is not connected yet."
+        }
+        return "Word is not open yet. Open Word, then open the Word MCP Bridge taskpane."
     }
 }

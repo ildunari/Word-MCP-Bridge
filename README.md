@@ -135,7 +135,7 @@ See [`packages/bridge/README.md`](packages/bridge/README.md) for copy-paste setu
 
 The helper app is now the main setup and operations surface. It can:
 
-- poll `https://127.0.0.1:4017/status`
+- poll `https://localhost:4017/status`
 - start the local bridge with `pnpm bridge:serve`
 - stop the local bridge through the bridge shutdown endpoint
 - show live totals for sessions, tool calls, errors, drops, and pending requests

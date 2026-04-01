@@ -2,6 +2,12 @@ import AppKit
 import Foundation
 import SwiftUI
 
+struct BridgeLaunchSpec: Equatable {
+    let command: String
+    let args: [String]
+    let currentDirectoryURL: URL?
+}
+
 @MainActor
 final class BridgeController: NSObject, ObservableObject {
     @Published private(set) var snapshot: HelperSnapshot?
@@ -9,6 +15,7 @@ final class BridgeController: NSObject, ObservableObject {
         bridgeReachable: false,
         bridgeProcessRunning: false,
         bridgeStarting: false,
+        wordAppRunning: false,
         connectedSessionCount: 0,
         assetAvailability: .unavailable
     )
@@ -23,14 +30,13 @@ final class BridgeController: NSObject, ObservableObject {
     private var bridgeProcess: Process?
     private var wordAddinProcess: Process?
     private var hasAttemptedAutoStart = false
-    private var hasAttemptedAutoLoadWordAddin = false
     private var previousSnapshot: HelperSnapshot?
     private var previousBridgeReachable = false
     private lazy var session: URLSession = {
         URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
     }()
 
-    let baseURL = URL(string: "https://127.0.0.1:4017")!
+    let baseURL = URL(string: "https://localhost:4017")!
 
     var isBridgeRunning: Bool {
         setupState.bridgeReachable || setupState.bridgeProcessRunning || isStarting
@@ -38,6 +44,10 @@ final class BridgeController: NSObject, ObservableObject {
 
     var isWordAddinDevRunning: Bool {
         wordAddinProcess?.isRunning == true
+    }
+
+    var isWordRunning: Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: "com.microsoft.Word").isEmpty
     }
 
     override init() {
@@ -64,8 +74,6 @@ final class BridgeController: NSObject, ObservableObject {
             self.updateSetupState()
             self.autoStartBridgeIfNeeded()
             await self.requestNotificationsIfNeeded()
-            try? await Task.sleep(for: .milliseconds(500))
-            self.autoLoadWordAddinIfNeeded()
             while !Task.isCancelled {
                 await self.refresh()
                 try? await Task.sleep(for: .seconds(3))
@@ -97,8 +105,11 @@ final class BridgeController: NSObject, ObservableObject {
     func startBridge() {
         guard bridgeProcess == nil || bridgeProcess?.isRunning == false else { return }
         guard snapshot == nil else { return }
-        guard let repoRoot = resolveRepoRoot() else {
-            lastError = "Could not locate the Word-MCP-Bridge repo root."
+        let environment = launchEnvironment()
+        let repoRoot = resolveRepoRoot()
+        guard let launchSpec = Self.makeBridgeLaunchSpec(environment: environment, repoRoot: repoRoot) else {
+            lastError =
+                "Could not start the bridge. Install `office-bridge` on your PATH, or set WORD_MCP_BRIDGE_REPO_ROOT to a local Word-MCP-Bridge checkout."
             return
         }
 
@@ -106,10 +117,10 @@ final class BridgeController: NSObject, ObservableObject {
         lastError = nil
 
         let process = Process()
-        process.currentDirectoryURL = repoRoot
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["pnpm", "bridge:serve"]
-        process.environment = launchEnvironment()
+        process.currentDirectoryURL = launchSpec.currentDirectoryURL
+        process.executableURL = URL(fileURLWithPath: launchSpec.command)
+        process.arguments = launchSpec.args
+        process.environment = environment
         process.terminationHandler = { [weak self] process in
             Task { @MainActor [weak self] in
                 self?.bridgeProcess = nil
@@ -169,16 +180,11 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     func copyMcpConfig() {
-        let block = """
-        {
-          "mcpServers": {
-            "word-mcp-bridge": {
-              "command": "npx",
-              "args": ["-y", "@word-mcp-bridge/bridge", "mcp-serve", "--url", "https://localhost:4017"]
-            }
-          }
-        }
-        """
+        let block = Self.makeMcpConfigSnippet(
+            environment: launchEnvironment(),
+            repoRoot: resolveRepoRoot(),
+            bridgeURL: "https://localhost:4017"
+        )
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(block, forType: .string)
     }
@@ -372,11 +378,11 @@ final class BridgeController: NSObject, ObservableObject {
 
         let home = FileManager.default.homeDirectoryForCurrentUser
         let homeCandidates = [
-            home.appending(path: "LocalDev/Word-MCP-Bridge"),
-            home.appending(path: "Code/Word-MCP-Bridge"),
-            home.appending(path: "Developer/Word-MCP-Bridge"),
-            home.appending(path: "Projects/Word-MCP-Bridge"),
-            home.appending(path: "src/Word-MCP-Bridge"),
+            Self.appendingRelativePath("LocalDev/Word-MCP-Bridge", to: home),
+            Self.appendingRelativePath("Code/Word-MCP-Bridge", to: home),
+            Self.appendingRelativePath("Developer/Word-MCP-Bridge", to: home),
+            Self.appendingRelativePath("Projects/Word-MCP-Bridge", to: home),
+            Self.appendingRelativePath("src/Word-MCP-Bridge", to: home),
         ]
         for candidate in homeCandidates where isWordMCPBridgeRepo(candidate) {
             return candidate
@@ -393,7 +399,7 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     private func isWordMCPBridgeRepo(_ directory: URL) -> Bool {
-        let packageJSON = directory.appending(path: "package.json")
+        let packageJSON = Self.appendingRelativePath("package.json", to: directory)
         guard let data = try? Data(contentsOf: packageJSON),
               let text = String(data: data, encoding: .utf8) else {
             return false
@@ -435,18 +441,6 @@ final class BridgeController: NSObject, ObservableObject {
         startBridge()
     }
 
-    private func autoLoadWordAddinIfNeeded() {
-        guard !hasAttemptedAutoLoadWordAddin else { return }
-        hasAttemptedAutoLoadWordAddin = true
-        guard UserDefaults.standard.object(forKey: HelperPreferences.autoLoadWordAddinOnLaunchKey) == nil
-            || UserDefaults.standard.bool(forKey: HelperPreferences.autoLoadWordAddinOnLaunchKey)
-        else {
-            return
-        }
-        guard resolveRepoRoot() != nil else { return }
-        startWordAddinDevSession()
-    }
-
     private func resolvedAssetAvailability() -> HelperAssetAvailability {
         HelperAssetAvailability(
             hostedManifestURL: resolvedAssetURL(
@@ -465,18 +459,116 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     private func resolvedAssetURL(bundledPath: String, repoRelativePath: String) -> URL? {
-        if let resourceURL = Bundle.main.resourceURL?.appending(path: bundledPath),
-           FileManager.default.fileExists(atPath: resourceURL.path()) {
-            return resourceURL
+        if let resourceRoot = Bundle.main.resourceURL {
+            let resourceURL = Self.appendingRelativePath(bundledPath, to: resourceRoot)
+            if FileManager.default.fileExists(atPath: resourceURL.path()) {
+                return resourceURL
+            }
         }
 
         if let repoRoot = resolveRepoRoot() {
-            let repoURL = repoRoot.appending(path: repoRelativePath)
+            let repoURL = Self.appendingRelativePath(repoRelativePath, to: repoRoot)
             if FileManager.default.fileExists(atPath: repoURL.path()) {
                 return repoURL
             }
         }
 
+        return nil
+    }
+
+    nonisolated static func appendingRelativePath(_ relativePath: String, to baseURL: URL) -> URL {
+        relativePath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .reduce(baseURL) { partialURL, component in
+                partialURL.appendingPathComponent(String(component), isDirectory: false)
+            }
+    }
+
+    nonisolated static func makeBridgeLaunchSpec(environment: [String: String], repoRoot: URL?) -> BridgeLaunchSpec? {
+        if let repoRoot, let bridgeScriptURL = repoBridgeScriptURL(repoRoot: repoRoot) {
+            return BridgeLaunchSpec(
+                command: "/usr/bin/env",
+                args: ["node", bridgeScriptURL.path(), "serve"],
+                currentDirectoryURL: repoRoot
+            )
+        }
+
+        if let officeBridgePath = findExecutable(named: "office-bridge", environment: environment) {
+            return BridgeLaunchSpec(
+                command: officeBridgePath,
+                args: ["serve"],
+                currentDirectoryURL: nil
+            )
+        }
+
+        if let repoRoot {
+            return BridgeLaunchSpec(
+                command: "/usr/bin/env",
+                args: ["pnpm", "bridge:serve"],
+                currentDirectoryURL: repoRoot
+            )
+        }
+
+        return nil
+    }
+
+    nonisolated static func makeMcpConfigSnippet(environment: [String: String], repoRoot: URL?, bridgeURL: String) -> String {
+        let launchSpec = makeMcpLaunchSpec(environment: environment, repoRoot: repoRoot, bridgeURL: bridgeURL)
+
+        let argsJSON = launchSpec.args
+            .map { "\"\($0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\"" }
+            .joined(separator: ", ")
+
+        return """
+        {
+          "mcpServers": {
+            "word-mcp-bridge": {
+              "command": "\(launchSpec.command)",
+              "args": [\(argsJSON)]
+            }
+          }
+        }
+        """
+    }
+
+    nonisolated static func makeMcpLaunchSpec(environment: [String: String], repoRoot: URL?, bridgeURL: String) -> BridgeLaunchSpec {
+        if let repoRoot, let bridgeScriptURL = repoBridgeScriptURL(repoRoot: repoRoot) {
+            return BridgeLaunchSpec(
+                command: "/usr/bin/env",
+                args: ["node", bridgeScriptURL.path(), "mcp-serve", "--url", bridgeURL],
+                currentDirectoryURL: repoRoot
+            )
+        }
+
+        if let officeBridgePath = findExecutable(named: "office-bridge", environment: environment) {
+            return BridgeLaunchSpec(
+                command: officeBridgePath,
+                args: ["mcp-serve", "--url", bridgeURL],
+                currentDirectoryURL: nil
+            )
+        }
+
+        return BridgeLaunchSpec(
+            command: "office-bridge",
+            args: ["mcp-serve", "--url", bridgeURL],
+            currentDirectoryURL: nil
+        )
+    }
+
+    private nonisolated static func repoBridgeScriptURL(repoRoot: URL) -> URL? {
+        let scriptURL = appendingRelativePath("packages/bridge/bin/office-bridge.js", to: repoRoot)
+        return FileManager.default.fileExists(atPath: scriptURL.path()) ? scriptURL : nil
+    }
+
+    private nonisolated static func findExecutable(named executable: String, environment: [String: String]) -> String? {
+        let searchPath = environment["PATH"] ?? ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for pathEntry in searchPath.split(separator: ":") {
+            let candidate = URL(fileURLWithPath: String(pathEntry), isDirectory: true)
+                .appendingPathComponent(executable, isDirectory: false)
+            if FileManager.default.isExecutableFile(atPath: candidate.path()) {
+                return candidate.path()
+            }
+        }
         return nil
     }
 
@@ -486,6 +578,7 @@ final class BridgeController: NSObject, ObservableObject {
             bridgeReachable: snapshot != nil,
             bridgeProcessRunning: bridgeProcess?.isRunning == true,
             bridgeStarting: isStarting,
+            wordAppRunning: isWordRunning,
             connectedSessionCount: snapshot?.status.sessionCount ?? 0,
             assetAvailability: assetAvailability
         )
