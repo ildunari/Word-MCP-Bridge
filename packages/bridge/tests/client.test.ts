@@ -249,6 +249,49 @@ describe("bridge client", () => {
     expect(controller.getStatus().lastError?.message).toContain(
       "Could not connect to the bridge server",
     );
+    expect(
+      controller.getStatus().diagnostics.some((entry) =>
+        entry.message.includes("WebSocket error while connecting"),
+      ),
+    ).toBe(true);
+    expect(
+      controller.getStatus().diagnostics.some((entry) =>
+        entry.message.includes("WebSocket closed"),
+      ),
+    ).toBe(true);
+
+    controller.stop();
+  });
+
+  it("records a diagnostic when the WebSocket constructor throws", async () => {
+    class ThrowingWebSocket {
+      static OPEN = 1;
+      readyState = 0;
+
+      constructor() {
+        throw new Error("Constructor blocked");
+      }
+    }
+
+    vi.stubGlobal("WebSocket", ThrowingWebSocket);
+    const controller = startOfficeBridge({
+      app: "word",
+      adapter: { ...adapter },
+      enabled: true,
+      reconnectBaseMs: 50,
+    });
+
+    await vi.waitFor(() => {
+      expect(controller.getStatus().lastError?.message).toContain(
+        "Constructor blocked",
+      );
+    });
+
+    expect(
+      controller.getStatus().diagnostics.some((entry) =>
+        entry.message.includes("WebSocket constructor failed"),
+      ),
+    ).toBe(true);
 
     controller.stop();
   });

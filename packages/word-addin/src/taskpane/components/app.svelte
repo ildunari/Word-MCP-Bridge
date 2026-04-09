@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    type OfficeBridgeDiagnosticEntry,
     type OfficeBridgeConnectionStatus,
     type OfficeBridgeController,
     startOfficeBridge,
@@ -40,6 +41,7 @@
     isConnected: false,
     hasConnected: false,
     lastError: null,
+    diagnostics: [],
   };
   let isRefreshing = false;
   let lastRefreshLabel = "Never";
@@ -123,6 +125,14 @@
     return connectionView.subtitle;
   }
 
+  function resolvedBridgeUrl(): string {
+    return bridgeStatus.serverUrl || bridgeUrl;
+  }
+
+  function diagnosticTimestamp(entry: OfficeBridgeDiagnosticEntry): string {
+    return new Date(entry.at).toLocaleTimeString();
+  }
+
   function documentHeadline(): string {
     const title = metadataValue("title");
     if (title !== "n/a") return title;
@@ -141,32 +151,9 @@
   }
 
   onMount(() => {
-    const adapter = createWordBridgeAdapter();
-    controller = startOfficeBridge({
-      app: "word",
-      adapter,
-      enabled: bridgeEnabled,
-      serverUrl: bridgeUrl,
-      forwardConsole: false,
-    });
-    bridgeStatus = controller.getStatus();
-    const unsubscribeBridgeStatus = controller.subscribe((status) => {
-      bridgeStatus = status;
-    });
-
-    const detachBridgeEvents = attachWordLiveContextBridge(controller);
-    const officeDocument =
-      typeof Office === "undefined" ? undefined : Office?.context?.document;
-    const detachSelectionHandler = bindOfficeDocumentHandler(
-      officeDocument,
-      typeof Office === "undefined"
-        ? "DocumentSelectionChanged"
-        : (Office?.EventType?.DocumentSelectionChanged ?? "DocumentSelectionChanged"),
-      () => {
-        log("Word selection changed.");
-        void refreshStatus("selection change");
-      },
-    );
+    let unsubscribeBridgeStatus = () => undefined;
+    let detachBridgeEvents = () => undefined;
+    let detachSelectionHandler = () => undefined;
 
     const handleWindowFocus = () => {
       log("Taskpane regained focus.");
@@ -181,19 +168,60 @@
       void refreshStatus("tracking mode change");
     };
 
-    window.addEventListener("focus", handleWindowFocus);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener(
-      WORD_TRACKING_MODE_CHANGED_EVENT,
-      handleTrackingModeChange,
-    );
+    try {
+      const adapter = createWordBridgeAdapter();
+      controller = startOfficeBridge({
+        app: "word",
+        adapter,
+        enabled: bridgeEnabled,
+        serverUrl: bridgeUrl,
+        forwardConsole: false,
+      });
+      bridgeStatus = controller.getStatus();
+      unsubscribeBridgeStatus = controller.subscribe((status) => {
+        if (status.phase !== bridgeStatus.phase) {
+          log(`Bridge phase changed to ${status.phase}.`);
+        }
+        if (status.lastError?.at !== bridgeStatus.lastError?.at && status.lastError) {
+          log(`Bridge error: ${status.lastError.message}`);
+        }
+        bridgeStatus = status;
+      });
 
-    log(
-      controller.enabled
-        ? `Bridge client started for ${bridgeUrl}.`
-        : "Bridge client is disabled by query or local storage.",
-    );
-    void refreshStatus("startup");
+      detachBridgeEvents = attachWordLiveContextBridge(controller);
+      const officeDocument =
+        typeof Office === "undefined" ? undefined : Office?.context?.document;
+      detachSelectionHandler = bindOfficeDocumentHandler(
+        officeDocument,
+        typeof Office === "undefined"
+          ? "DocumentSelectionChanged"
+          : (Office?.EventType?.DocumentSelectionChanged ?? "DocumentSelectionChanged"),
+        () => {
+          log("Word selection changed.");
+          void refreshStatus("selection change");
+        },
+      );
+
+      window.addEventListener("focus", handleWindowFocus);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      window.addEventListener(
+        WORD_TRACKING_MODE_CHANGED_EVENT,
+        handleTrackingModeChange,
+      );
+
+      log(
+        controller.enabled
+          ? `Bridge client started for ${bridgeUrl} (resolved to ${resolvedBridgeUrl()}).`
+          : "Bridge client is disabled by query or local storage.",
+      );
+      void refreshStatus("startup");
+    } catch (error) {
+      errorMessage =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Taskpane startup failed before the bridge client initialized.";
+      log(`Taskpane startup failed: ${errorMessage}`);
+    }
 
     return () => {
       detachBridgeEvents();
@@ -255,7 +283,8 @@
     </div>
 
     <div class="hero-footer">
-      <span>Bridge endpoint: <code>{bridgeUrl}</code></span>
+      <span>Configured bridge endpoint: <code>{bridgeUrl}</code></span>
+      <span>Resolved websocket endpoint: <code>{resolvedBridgeUrl()}</code></span>
       <span>Last refresh: {lastRefreshLabel}</span>
     </div>
   </section>
@@ -316,7 +345,7 @@
         </div>
         <div>
           <dt>Bridge URL</dt>
-          <dd><code>{bridgeUrl}</code></dd>
+          <dd><code>{resolvedBridgeUrl()}</code></dd>
         </div>
         <div>
           <dt>Session ID</dt>
@@ -404,6 +433,27 @@
       <p class="caption">
         This minimal add-in enables live observation plus privileged raw Office.js execution.
       </p>
+    </section>
+
+    <section class="panel panel-wide">
+      <h2>Bridge diagnostics</h2>
+      {#if bridgeStatus.diagnostics.length}
+        <ul class="activity-list">
+          {#each bridgeStatus.diagnostics as item}
+            <li>
+              <div class="activity-copy">
+                <strong class:diagnostic-error={item.level === "error"} class:diagnostic-warn={item.level === "warn"}>
+                  {item.level}
+                </strong>
+                <span>{item.message}</span>
+              </div>
+              <time>{diagnosticTimestamp(item)}</time>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="muted">No bridge diagnostics captured yet.</p>
+      {/if}
     </section>
 
     <section class="panel panel-wide">
@@ -678,10 +728,36 @@
   .activity-list li {
     display: flex;
     justify-content: space-between;
+    align-items: flex-start;
     gap: 12px;
     font-size: 14px;
     padding: 10px 0;
     border-bottom: 1px solid rgba(25, 40, 72, 0.08);
+  }
+
+  .activity-copy {
+    display: grid;
+    gap: 4px;
+  }
+
+  .activity-copy strong {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    color: #61708b;
+  }
+
+  .activity-copy span {
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .diagnostic-error {
+    color: #b42318;
+  }
+
+  .diagnostic-warn {
+    color: #9a6700;
   }
 
   .activity-list li:last-child {

@@ -130,17 +130,21 @@ function jsonResponse(
   res.end(JSON.stringify(payload));
 }
 
-const ALLOWED_BROWSER_ORIGIN_PORTS = new Set(["3000", "3001", "3002", "3003"]);
+const ALLOWED_HOSTED_BROWSER_ORIGINS = new Set(["word-mcp-bridge.pages.dev"]);
 
-function isAllowedBrowserOrigin(origin: string | undefined): boolean {
+export function isAllowedBrowserOrigin(origin: string | undefined): boolean {
   if (!origin) return false;
   try {
     const url = new URL(origin);
-    return (
-      url.protocol === "https:" &&
-      ["localhost", "127.0.0.1"].includes(url.hostname) &&
-      ALLOWED_BROWSER_ORIGIN_PORTS.has(url.port)
-    );
+    if (url.protocol !== "https:") {
+      return false;
+    }
+
+    if (["localhost", "127.0.0.1"].includes(url.hostname)) {
+      return true;
+    }
+
+    return ALLOWED_HOSTED_BROWSER_ORIGINS.has(url.hostname);
   } catch {
     return false;
   }
@@ -173,6 +177,7 @@ function authorizeRequest(
   url: URL,
   res: ServerResponse,
   authToken: string,
+  logger: Pick<Console, "warn">,
 ): boolean {
   if (isAllowedBrowserOrigin(req.headers.origin)) {
     return true;
@@ -184,6 +189,9 @@ function authorizeRequest(
   }
 
   const statusCode = req.headers.origin ? 403 : 401;
+  logger.warn(
+    `[bridge] rejected ${req.method || "UNKNOWN"} ${url.pathname} origin=${req.headers.origin || "<none>"} token=${token ? "present" : "missing"}`,
+  );
   jsonResponse(res, statusCode, {
     ok: false,
     error: {
@@ -399,7 +407,7 @@ export async function createBridgeServer(
           return;
         }
 
-        if (!authorizeRequest(req, url, res, auth.token)) {
+        if (!authorizeRequest(req, url, res, auth.token, logger)) {
           return;
         }
 
@@ -905,6 +913,9 @@ export async function createBridgeServer(
     const requestUrl = request.url || DEFAULT_BRIDGE_WS_PATH;
     const url = new URL(requestUrl, `https://${host}:${port}`);
     if (url.pathname !== DEFAULT_BRIDGE_WS_PATH) {
+      logger.warn(
+        `[bridge] rejected websocket upgrade for unexpected path=${url.pathname} origin=${request.headers.origin || "<none>"}`,
+      );
       socket.destroy();
       return;
     }
@@ -912,11 +923,17 @@ export async function createBridgeServer(
     const allowedOrigin = isAllowedBrowserOrigin(request.headers.origin);
     const token = requestToken(request, url);
     if (!allowedOrigin && token !== auth.token) {
+      logger.warn(
+        `[bridge] rejected websocket upgrade origin=${request.headers.origin || "<none>"} token=${token ? "present" : "missing"} path=${url.pathname}`,
+      );
       socket.destroy();
       return;
     }
 
     wsServer.handleUpgrade(request, socket, head, (ws) => {
+      logger.log(
+        `[bridge] accepted websocket upgrade origin=${request.headers.origin || "<none>"} path=${url.pathname}`,
+      );
       wsServer.emit("connection", ws, request);
     });
   });

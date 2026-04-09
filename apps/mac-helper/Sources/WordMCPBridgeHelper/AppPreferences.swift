@@ -6,6 +6,7 @@ enum HelperPreferences {
     static let autoStartBridgeOnLaunchKey = "autoStartBridgeOnLaunch"
     static let notificationsEnabledKey = "notificationsEnabled"
     static let hasCompletedOnboardingKey = "hasCompletedOnboarding"
+    static let dismissSetupBannerKey = "dismissSetupBanner"
 }
 
 enum LaunchAtLoginManager {
@@ -51,7 +52,7 @@ struct SettingsView: View {
 
             Section("Notes") {
                 Text("Hosted installs: add the add-in once from the hosted manifest, then use Word as usual.")
-                Text("Local dev: use “Load Word dev add-in” in the menu only when you explicitly want to sideload from this repo.")
+                Text("Local dev: use the helper panel’s Actions section when you explicitly want to sideload from this repo.")
             }
 
             if let launchAtLoginError {

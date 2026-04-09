@@ -102,6 +102,12 @@ export interface OfficeBridgeStatusError {
   at: number;
 }
 
+export interface OfficeBridgeDiagnosticEntry {
+  level: "info" | "warn" | "error";
+  message: string;
+  at: number;
+}
+
 export interface OfficeBridgeConnectionStatus {
   enabled: boolean;
   serverUrl: string;
@@ -109,6 +115,7 @@ export interface OfficeBridgeConnectionStatus {
   isConnected: boolean;
   hasConnected: boolean;
   lastError: OfficeBridgeStatusError | null;
+  diagnostics: OfficeBridgeDiagnosticEntry[];
 }
 
 interface PendingState {
@@ -125,6 +132,7 @@ const BRIDGE_URL_QUERY_KEY = "office_bridge_url";
 const BRIDGE_ENABLE_STORAGE_KEY = "office-agents-bridge-enabled";
 const BRIDGE_URL_STORAGE_KEY = "office-agents-bridge-url";
 const BRIDGE_INSTANCE_PREFIX = "office-agents-bridge-instance";
+const MAX_BRIDGE_DIAGNOSTICS = 12;
 
 function getStoredInstanceId(app: string): string {
   const key = `${BRIDGE_INSTANCE_PREFIX}:${app}`;
@@ -292,6 +300,7 @@ export function startOfficeBridge(
       isConnected: false,
       hasConnected: false,
       lastError: null,
+      diagnostics: [],
     },
   };
 
@@ -305,6 +314,13 @@ export function startOfficeBridge(
   const reconnectBaseMs = options.reconnectBaseMs ?? 1_000;
   const reconnectMaxMs = options.reconnectMaxMs ?? 10_000;
 
+  const cloneStatus = (
+    status: OfficeBridgeConnectionStatus,
+  ): OfficeBridgeConnectionStatus => ({
+    ...status,
+    diagnostics: [...status.diagnostics],
+  });
+
   const publishStatus = (next: Partial<OfficeBridgeConnectionStatus>) => {
     const merged: OfficeBridgeConnectionStatus = {
       ...state.status,
@@ -315,12 +331,29 @@ export function startOfficeBridge(
       merged.isConnected !== state.status.isConnected ||
       merged.hasConnected !== state.status.hasConnected ||
       merged.lastError?.message !== state.status.lastError?.message ||
-      merged.lastError?.at !== state.status.lastError?.at;
+      merged.lastError?.at !== state.status.lastError?.at ||
+      merged.diagnostics !== state.status.diagnostics;
     state.status = merged;
     if (!changed) return;
     for (const listener of statusListeners) {
-      listener({ ...merged });
+      listener(cloneStatus(merged));
     }
+  };
+
+  const appendDiagnostic = (
+    level: OfficeBridgeDiagnosticEntry["level"],
+    message: string,
+  ) => {
+    publishStatus({
+      diagnostics: [
+        {
+          level,
+          message,
+          at: Date.now(),
+        },
+        ...state.status.diagnostics,
+      ].slice(0, MAX_BRIDGE_DIAGNOSTICS),
+    });
   };
 
   const send = (message: BridgeWireMessage) => {
@@ -741,17 +774,50 @@ export function startOfficeBridge(
     }
   };
 
+  const scheduleReconnect = () => {
+    clearReconnectTimer();
+    state.reconnectTimer = window.setTimeout(() => {
+      connect().catch(() => undefined);
+    }, state.reconnectDelayMs);
+    state.reconnectDelayMs = Math.min(
+      state.reconnectDelayMs * 2,
+      reconnectMaxMs,
+    );
+  };
+
   const connect = async () => {
     if (state.stopped) return;
     publishStatus({
       phase: state.status.hasConnected ? "reconnecting" : "connecting",
       isConnected: false,
     });
+    appendDiagnostic("info", `Attempting websocket connection to ${serverUrl}.`);
 
-    const socket = new WebSocket(serverUrl);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(serverUrl);
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : bridgeConnectionErrorMessage();
+      publishStatus({
+        lastError: {
+          message,
+          at: Date.now(),
+        },
+      });
+      appendDiagnostic(
+        "error",
+        `WebSocket constructor failed for ${serverUrl}: ${message}`,
+      );
+      scheduleReconnect();
+      return;
+    }
     state.socket = socket;
 
     socket.addEventListener("open", () => {
+      appendDiagnostic("info", `WebSocket opened for ${serverUrl}.`);
       clearReconnectTimer();
       state.reconnectDelayMs = reconnectBaseMs;
       refresh()
@@ -773,17 +839,26 @@ export function startOfficeBridge(
             hasConnected: true,
             lastError: null,
           });
+          appendDiagnostic(
+            "info",
+            `Bridge session connected for ${snapshot.sessionId}.`,
+          );
         })
         .catch((error) => {
+          const message =
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : bridgeConnectionErrorMessage();
           publishStatus({
             lastError: {
-              message:
-                error instanceof Error && error.message.trim()
-                  ? error.message
-                  : bridgeConnectionErrorMessage(),
+              message,
               at: Date.now(),
             },
           });
+          appendDiagnostic(
+            "error",
+            `Connected socket could not build a bridge snapshot: ${message}`,
+          );
           sendEvent("bridge_error", {
             message: "Failed to build bridge snapshot",
             error: toBridgeError(error),
@@ -797,7 +872,7 @@ export function startOfficeBridge(
       handleInvoke(message);
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       if (state.socket === socket) {
         state.socket = null;
       }
@@ -809,21 +884,31 @@ export function startOfficeBridge(
         return;
       }
 
-      clearReconnectTimer();
+      const closeCode =
+        typeof (event as CloseEvent | undefined)?.code === "number"
+          ? ` code=${(event as CloseEvent).code}`
+          : "";
+      const closeReason =
+        typeof (event as CloseEvent | undefined)?.reason === "string" &&
+        (event as CloseEvent).reason
+          ? ` reason=${(event as CloseEvent).reason}`
+          : "";
+      appendDiagnostic(
+        "warn",
+        `WebSocket closed for ${serverUrl}.${closeCode}${closeReason}`,
+      );
       publishStatus({
         phase: "reconnecting",
         isConnected: false,
       });
-      state.reconnectTimer = window.setTimeout(() => {
-        connect().catch(() => undefined);
-      }, state.reconnectDelayMs);
-      state.reconnectDelayMs = Math.min(
-        state.reconnectDelayMs * 2,
-        reconnectMaxMs,
-      );
+      scheduleReconnect();
     });
 
     socket.addEventListener("error", () => {
+      appendDiagnostic(
+        "error",
+        `WebSocket error while connecting to ${serverUrl}.`,
+      );
       publishStatus({
         lastError: {
           message: bridgeConnectionErrorMessage(),
@@ -836,6 +921,10 @@ export function startOfficeBridge(
 
   const setupForwarders = () => {
     const handleWindowError = (event: ErrorEvent) => {
+      appendDiagnostic(
+        "error",
+        `Window error: ${event.message || "Unknown taskpane error"}`,
+      );
       sendEvent("window_error", {
         message: event.message,
         filename: event.filename,
@@ -846,6 +935,13 @@ export function startOfficeBridge(
     };
 
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason =
+        event.reason instanceof Error
+          ? event.reason.message
+          : typeof event.reason === "string"
+            ? event.reason
+            : JSON.stringify(serializeForJson(event.reason));
+      appendDiagnostic("error", `Unhandled rejection: ${reason}`);
       sendEvent("unhandled_rejection", {
         reason: serializeForJson(event.reason),
       });
@@ -917,6 +1013,7 @@ export function startOfficeBridge(
 
   let teardown = () => undefined;
   if (enabled) {
+    appendDiagnostic("info", `Bridge client enabled for ${serverUrl}.`);
     teardown = setupForwarders();
     connect().catch(() => undefined);
   }
@@ -935,10 +1032,10 @@ export function startOfficeBridge(
       if (!enabled || state.stopped) return;
       sendEvent(event, payload);
     },
-    getStatus: () => ({ ...state.status }),
+    getStatus: () => cloneStatus(state.status),
     subscribe: (listener) => {
       statusListeners.add(listener);
-      listener({ ...state.status });
+      listener(cloneStatus(state.status));
       return () => {
         statusListeners.delete(listener);
       };

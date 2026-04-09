@@ -239,19 +239,14 @@ final class BridgeController: NSObject, ObservableObject {
         NSWorkspace.shared.open(setupGuideURL)
     }
 
-    func showOnboarding(force: Bool = false) {
-        if force || !UserDefaults.standard.bool(forKey: HelperPreferences.hasCompletedOnboardingKey) {
-            OnboardingWindowManager.shared.show(controller: self)
-        }
-    }
-
     func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: HelperPreferences.hasCompletedOnboardingKey)
+        UserDefaults.standard.set(false, forKey: HelperPreferences.dismissSetupBannerKey)
     }
 
     func resetOnboarding() {
         UserDefaults.standard.set(false, forKey: HelperPreferences.hasCompletedOnboardingKey)
-        showOnboarding(force: true)
+        UserDefaults.standard.set(false, forKey: HelperPreferences.dismissSetupBannerKey)
     }
 
     func startWordAddinDevSession() {
@@ -316,7 +311,6 @@ final class BridgeController: NSObject, ObservableObject {
         wordAddinLastError = nil
         if let proc = wordAddinProcess, proc.isRunning {
             proc.terminate()
-            proc.waitUntilExit()
         }
         wordAddinProcess = nil
         isWordAddinStarting = false
@@ -337,19 +331,30 @@ final class BridgeController: NSObject, ObservableObject {
         stopProcess.arguments = ["pnpm", "exec", "office-addin-debugging", "stop", "manifest.xml"]
         stopProcess.currentDirectoryURL = wordAddinDir
         stopProcess.environment = launchEnvironment()
-        if let nullOut = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null")),
-           let nullErr = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null")) {
+        let stderrPipe = Pipe()
+        if let nullOut = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null")) {
             stopProcess.standardOutput = nullOut
-            stopProcess.standardError = nullErr
+        }
+        stopProcess.standardError = stderrPipe
+        stopProcess.terminationHandler = { [weak self] proc in
+            Task { @MainActor [weak self] in
+                if proc.terminationStatus != 0 {
+                    let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    let text = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let detail = text.isEmpty ? "exit code \(proc.terminationStatus)" : text
+                    self?.wordAddinLastError = "Word dev add-in stop exited: \(detail)"
+                }
+                self?.updateSetupState()
+            }
         }
 
         do {
             try stopProcess.run()
-            stopProcess.waitUntilExit()
         } catch {
             wordAddinLastError = "Could not run office-addin-debugging stop: \(error.localizedDescription)"
+            updateSetupState()
         }
-        updateSetupState()
     }
 
     private func stopWordAddinProcessOnQuit() {

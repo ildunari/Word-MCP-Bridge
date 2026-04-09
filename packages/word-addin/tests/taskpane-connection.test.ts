@@ -21,12 +21,14 @@ describe("deriveTaskpaneConnectionView", () => {
         isConnected: false,
         hasConnected: true,
         lastError: { message: "Could not connect to the bridge server.", at: 3 },
+        diagnostics: [],
       },
     });
 
     expect(view.headline).toBe("Word is ready");
     expect(view.statusLabel).toBe("Reconnecting");
     expect(view.subtitle).toContain("trying to reconnect");
+    expect(view.subtitle).toContain("Could not connect to the bridge server.");
   });
 
   it("shows waiting for Word when the bridge is up but no document snapshot exists", () => {
@@ -39,11 +41,48 @@ describe("deriveTaskpaneConnectionView", () => {
         isConnected: true,
         hasConnected: true,
         lastError: null,
+        diagnostics: [],
       },
     });
 
     expect(view.headline).toBe("Waiting for Word");
     expect(view.statusLabel).toBe("Bridge connected");
     expect(view.subtitle).toContain("Open the Word MCP Bridge taskpane");
+  });
+
+  it("shows the last socket error while still connecting", () => {
+    const view = deriveTaskpaneConnectionView({
+      snapshot: null,
+      bridgeStatus: {
+        enabled: true,
+        serverUrl: "wss://localhost:4017/ws",
+        phase: "connecting",
+        isConnected: false,
+        hasConnected: false,
+        lastError: { message: "Constructor blocked", at: 4 },
+        diagnostics: [],
+      },
+    });
+
+    expect(view.statusLabel).toBe("Connecting");
+    expect(view.subtitle).toContain("Last error: Constructor blocked");
+  });
+
+  it("shows disconnected messaging when the bridge client has been stopped", () => {
+    const view = deriveTaskpaneConnectionView({
+      snapshot: null,
+      bridgeStatus: {
+        enabled: true,
+        serverUrl: "wss://localhost:4017/ws",
+        phase: "disconnected",
+        isConnected: false,
+        hasConnected: true,
+        lastError: null,
+        diagnostics: [],
+      },
+    });
+
+    expect(view.statusLabel).toBe("Disconnected");
+    expect(view.subtitle).toContain("disconnected");
   });
 });

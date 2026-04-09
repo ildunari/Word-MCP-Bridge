@@ -18,6 +18,9 @@ export function deriveTaskpaneConnectionView(
   options: TaskpaneConnectionViewOptions,
 ): TaskpaneConnectionView {
   const { snapshot, bridgeStatus } = options;
+  const lastErrorDetail = bridgeStatus.lastError?.message
+    ? ` Last error: ${bridgeStatus.lastError.message}`
+    : "";
 
   if (!bridgeStatus.enabled) {
     return {
@@ -42,7 +45,8 @@ export function deriveTaskpaneConnectionView(
       headline: "Word is ready",
       statusLabel: "Reconnecting",
       subtitle:
-        "Word document data is available locally, but the bridge is trying to reconnect before MCP tools can attach.",
+        "Word document data is available locally, but the bridge is trying to reconnect before MCP tools can attach." +
+        lastErrorDetail,
     };
   }
 
@@ -61,7 +65,18 @@ export function deriveTaskpaneConnectionView(
       statusLabel:
         bridgeStatus.phase === "connecting" ? "Connecting" : "Reconnecting",
       subtitle:
-        "The taskpane is trying to reach the local bridge server. Start the helper or bridge server if it is not running yet.",
+        "The taskpane is trying to reach the local bridge server. Start the helper or bridge server if it is not running yet." +
+        lastErrorDetail,
+    };
+  }
+
+  if (bridgeStatus.phase === "disconnected") {
+    return {
+      headline: snapshot ? "Word is ready" : "Bridge disconnected",
+      statusLabel: "Disconnected",
+      subtitle:
+        "The taskpane bridge client is disconnected. Refresh or reopen the taskpane to reconnect." +
+        lastErrorDetail,
     };
   }
 

@@ -22,6 +22,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   findMatchingSession,
+  isAllowedBrowserOrigin,
   summarizeExecutionError,
   type BridgeSessionRecord,
 } from "../src/server";
@@ -143,6 +144,28 @@ describe("findMatchingSession", () => {
     const result = findMatchingSession(sessions, "POWERPOINT");
     expect(result).toHaveLength(1);
     expect(result[0].snapshot.app).toBe("powerpoint");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Browser-origin allowlist
+// ---------------------------------------------------------------------------
+
+describe("isAllowedBrowserOrigin", () => {
+  it("allows localhost dev-server origins on arbitrary https ports", () => {
+    expect(isAllowedBrowserOrigin("https://localhost:3013")).toBe(true);
+    expect(isAllowedBrowserOrigin("https://127.0.0.1:4173")).toBe(true);
+  });
+
+  it("allows the hosted pages origin", () => {
+    expect(isAllowedBrowserOrigin("https://word-mcp-bridge.pages.dev")).toBe(
+      true,
+    );
+  });
+
+  it("rejects unrelated origins and insecure protocols", () => {
+    expect(isAllowedBrowserOrigin("http://localhost:3013")).toBe(false);
+    expect(isAllowedBrowserOrigin("https://example.com")).toBe(false);
   });
 });
 
