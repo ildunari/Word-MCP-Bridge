@@ -71,6 +71,9 @@ describe("deriveTaskpaneDashboardView", () => {
       }),
       serverSessionRegistered: true,
       connectedSessionCount: 1,
+      paneVisibility: "visible",
+      sharedRuntimeAvailable: true,
+      startupBehavior: "load",
     });
 
     expect(view.statusLabel).toBe("Connected");
@@ -79,6 +82,9 @@ describe("deriveTaskpaneDashboardView", () => {
     expect(view.selectionCard.title).toBe("Selection ready");
     expect(view.readinessCard.items[0]).toContain("Current document text");
     expect(view.readinessCard.warning).toBeUndefined();
+    expect(view.connectionCard.items).toContain("Panel visibility: Visible");
+    expect(view.connectionCard.items).toContain("Shared runtime: Available");
+    expect(view.connectionCard.items).toContain("Startup behavior: Load on open");
   });
 
   it("shows connecting guidance without leaking low-level bridge wording", () => {

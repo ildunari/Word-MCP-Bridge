@@ -27,7 +27,6 @@ export default defineConfig(async () => ({
     rollupOptions: {
       input: {
         taskpane: path.resolve(__dirname, "src/taskpane.html"),
-        commands: path.resolve(__dirname, "src/commands.html"),
       },
     },
   },

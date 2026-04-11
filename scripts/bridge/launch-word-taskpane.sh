@@ -26,7 +26,7 @@ Options:
       Local bridge URL to poll after launching. Default: https://localhost:4017
   --timeout <seconds>
       How long to wait for a live Word bridge session after a successful open.
-      Default: 8
+      Default: 8. A hidden shared-runtime session also counts as success.
   --no-bridge-wait
       Skip bridge-session polling after UI automation succeeds.
   --help
@@ -155,32 +155,60 @@ process.stdin.on('end', () => {
     const sessions = Array.isArray(status.sessions)
       ? status.sessions.filter((session) => session?.snapshot?.app === 'word')
       : [];
+    const hiddenVisibilityModes = new Set(['hidden', 'background', 'background_active', 'collapsed']);
+    const resolveVisibilityMode = (session) => {
+      const runtimeState = session?.snapshot?.runtimeState;
+      const metadata = session?.snapshot?.documentMetadata;
+      const candidates = [
+        runtimeState?.visibilityMode,
+        runtimeState?.paneVisibility,
+        runtimeState?.taskpaneVisibility,
+        metadata?.visibilityMode,
+        metadata?.paneVisibility,
+        metadata?.taskpaneVisibility,
+      ];
+      const visibleValue = candidates.find((value) => typeof value === 'string' && value.trim().length > 0);
+      if (visibleValue) {
+        return visibleValue.trim().toLowerCase();
+      }
+      if (runtimeState?.hidden === true || runtimeState?.isHidden === true || metadata?.hidden === true || metadata?.isHidden === true) {
+        return 'hidden';
+      }
+      return null;
+    };
     const count = sessions.length;
     const hasRecent = sessions.some((session) => Number(session?.connectedAt ?? 0) >= Number(process.argv[1]));
     const hasRecentSeen = sessions.some((session) =>
       Number(session?.lastSeenAt ?? 0) >= Number(process.argv[1]) ||
       Number(session?.snapshot?.updatedAt ?? 0) >= Number(process.argv[1])
     );
+    const hiddenActiveCount = sessions.filter((session) => hiddenVisibilityModes.has(resolveVisibilityMode(session))).length;
     const baselineIds = new Set(JSON.parse(process.argv[2] ?? '[]'));
     const currentIds = sessions
       .map((session) => session?.snapshot?.sessionId)
       .filter((value) => typeof value === 'string' && value.length > 0);
     const newIds = currentIds.filter((id) => !baselineIds.has(id));
     const allBaselineIdsPresent = currentIds.length > 0 && [...baselineIds].every((id) => currentIds.includes(id));
-    process.stdout.write(JSON.stringify({ count, hasRecent, hasRecentSeen, newIds, allBaselineIdsPresent }));
+    process.stdout.write(JSON.stringify({ count, hasRecent, hasRecentSeen, hiddenActiveCount, newIds, allBaselineIdsPresent }));
   } catch {
-    process.stdout.write(JSON.stringify({ count: 0, hasRecent: false, hasRecentSeen: false, newIds: [], allBaselineIdsPresent: false }));
+    process.stdout.write(JSON.stringify({ count: 0, hasRecent: false, hasRecentSeen: false, hiddenActiveCount: 0, newIds: [], allBaselineIdsPresent: false }));
   }
 });
 " "$launch_started_at" "$baseline_word_session_ids")"
     current_count="$(printf '%s' "$probe_result" | node -e 'let raw=""; process.stdin.on("data", c => raw += c); process.stdin.on("end", () => { const parsed = JSON.parse(raw); process.stdout.write(String(parsed.count ?? 0)); });')"
     has_recent="$(printf '%s' "$probe_result" | node -e 'let raw=""; process.stdin.on("data", c => raw += c); process.stdin.on("end", () => { const parsed = JSON.parse(raw); process.stdout.write(String(Boolean(parsed.hasRecent))); });')"
     has_recent_seen="$(printf '%s' "$probe_result" | node -e 'let raw=""; process.stdin.on("data", c => raw += c); process.stdin.on("end", () => { const parsed = JSON.parse(raw); process.stdout.write(String(Boolean(parsed.hasRecentSeen))); });')"
+    hidden_active_count="$(printf '%s' "$probe_result" | node -e 'let raw=""; process.stdin.on("data", c => raw += c); process.stdin.on("end", () => { const parsed = JSON.parse(raw); process.stdout.write(String(parsed.hiddenActiveCount ?? 0)); });')"
     new_id_count="$(printf '%s' "$probe_result" | node -e 'let raw=""; process.stdin.on("data", c => raw += c); process.stdin.on("end", () => { const parsed = JSON.parse(raw); process.stdout.write(String(Array.isArray(parsed.newIds) ? parsed.newIds.length : 0)); });')"
     all_baseline_ids_present="$(printf '%s' "$probe_result" | node -e 'let raw=""; process.stdin.on("data", c => raw += c); process.stdin.on("end", () => { const parsed = JSON.parse(raw); process.stdout.write(String(Boolean(parsed.allBaselineIdsPresent))); });')"
 
     if [[ "$has_recent" == "true" || "$has_recent_seen" == "true" || "$new_id_count" -gt 0 ]]; then
       echo "Live Word bridge session confirmed."
+      exit 0
+    fi
+
+    if [[ "$hidden_active_count" -gt 0 && ( "$current_count" -gt "$baseline_word_session_count" || "$new_id_count" -gt 0 || "$all_baseline_ids_present" == "true" ) ]]; then
+      echo "Live Word bridge session confirmed (hidden shared-runtime session)."
       exit 0
     fi
 

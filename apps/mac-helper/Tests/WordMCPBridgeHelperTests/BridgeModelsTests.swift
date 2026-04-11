@@ -129,6 +129,30 @@ final class BridgeModelsTests: XCTestCase {
         XCTAssertEqual(state.currentStepSummary, "Word is open, but the Word MCP Bridge taskpane is not connected yet.")
     }
 
+    func testSetupStateConnectedSummaryAllowsHiddenSharedRuntimeSessions() {
+        let state = HelperSetupState(
+            taskpaneServerReachable: true,
+            taskpaneServerProcessRunning: true,
+            taskpaneServerStarting: false,
+            bridgeReachable: true,
+            bridgeProcessRunning: true,
+            bridgeStarting: false,
+            wordAppRunning: true,
+            connectedSessionCount: 1,
+            assetAvailability: .init(
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
+                setupGuideURL: nil
+            )
+        )
+
+        XCTAssertEqual(state.currentStepLabel, "Ready to use")
+        XCTAssertEqual(
+            state.currentStepSummary,
+            "A live Word session is connected. If shared runtime has hidden the panel, your CLI and MCP hosts can still attach now."
+        )
+    }
+
     func testSetupStateCallsOutLocalTaskpaneServerBeforeBridge() {
         let state = HelperSetupState(
             taskpaneServerReachable: false,
@@ -185,5 +209,47 @@ final class BridgeModelsTests: XCTestCase {
 
         XCTAssertEqual(payload.documentLabel, "Untitled Word document")
         XCTAssertEqual(payload.documentSummary, "Unsaved local document")
+    }
+
+    func testSessionRecognizesHiddenSharedRuntimeFromRuntimeState() {
+        let payload = BridgeSessionPayload(
+            snapshot: BridgeSessionSnapshotPayload(
+                sessionId: "word:hidden-1",
+                instanceId: "instance-1",
+                app: "word",
+                appName: "Microsoft Word",
+                documentId: "doc-1",
+                documentMetadata: BridgeMetadataPayload(
+                    documentId: "doc-1",
+                    title: "Draft.docx",
+                    url: nil
+                ),
+                runtimeState: BridgeRuntimeStatePayload(
+                    visibilityMode: "hidden",
+                    paneVisibility: nil,
+                    taskpaneVisibility: nil,
+                    startupBehavior: "load",
+                    startupBehaviorEnabled: true
+                ),
+                gateway: nil
+            ),
+            connectedAt: 1,
+            lastSeenAt: 1,
+            pendingCount: 0,
+            metrics: BridgeMetricsPayload(
+                eventCount: 0,
+                toolCallCount: 0,
+                bridgeErrorCount: 0,
+                requestTimeoutCount: 0,
+                connectionDropCount: 0,
+                disconnectedSessionCount: nil,
+                connectedSessionCount: nil,
+                pendingCount: nil
+            )
+        )
+
+        XCTAssertEqual(payload.runtimeVisibilityMode, "hidden")
+        XCTAssertTrue(payload.isHiddenSharedRuntimeSession)
+        XCTAssertTrue(payload.startsAutomatically)
     }
 }

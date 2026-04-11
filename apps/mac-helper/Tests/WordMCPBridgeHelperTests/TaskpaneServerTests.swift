@@ -2,6 +2,33 @@ import XCTest
 @testable import WordMCPBridgeHelper
 
 final class TaskpaneServerTests: XCTestCase {
+    func testLaunchWordTaskpaneHelpMentionsHiddenSharedRuntimeSuccess() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repoRoot.appendingPathComponent("scripts/bridge/launch-word-taskpane.sh")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [scriptURL.path, "--help"]
+
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+
+        try process.run()
+        process.waitUntilExit()
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let text = String(decoding: data, as: UTF8.self)
+
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertTrue(text.contains("hidden shared-runtime session"))
+    }
+
     @MainActor
     func testBridgeControllerDefaultsToLocalTaskpaneBaseUrl() {
         let controller = BridgeController()

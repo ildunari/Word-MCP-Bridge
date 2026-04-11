@@ -280,6 +280,11 @@ export interface BridgeTypedEvent<K extends BridgeEventName = BridgeEventName> {
 export interface BridgeRuntimeStateSlice {
   mode: string;
   taskPhase: string;
+  visibilityMode?: string | null;
+  paneVisibility?: string | null;
+  taskpaneVisibility?: string | null;
+  startupBehavior?: string | null;
+  startupBehaviorEnabled?: boolean | null;
   isStreaming: boolean;
   permissionMode: string;
   waitingState: string | null;

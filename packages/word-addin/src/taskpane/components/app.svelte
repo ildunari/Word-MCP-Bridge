@@ -1,346 +1,40 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import {
-    type OfficeBridgeConnectionStatus,
-    type OfficeBridgeController,
-    startOfficeBridge,
-  } from "@word-mcp-bridge/bridge/client";
-  import type {
-    BridgeLiveContext,
-    BridgeSessionSnapshot,
-  } from "@word-mcp-bridge/bridge/protocol";
-  import {
-    createWordBridgeAdapter,
-    deriveWordTaskpaneRuntimeState,
-    isBridgeForcedEnabled,
-    resolveBridgeSessionsUrl,
-    resolveConfiguredBridgeUrl,
-  } from "../../lib/bridge-adapter";
-  import { bindOfficeDocumentHandler } from "../../lib/components/office-document-events";
-  import {
-    attachWordLiveContextBridge,
-    WORD_TRACKING_MODE_CHANGED_EVENT,
-  } from "../../lib/live-context";
   import { deriveTaskpaneDashboardView } from "../../lib/taskpane-connection";
+  import {
+    ensureWordTaskpaneRuntime,
+    getWordTaskpaneRuntimeSnapshot,
+    hideWordTaskpaneRuntime,
+    reconnectWordTaskpaneRuntime,
+    refreshWordTaskpaneRuntime,
+    subscribeWordTaskpaneRuntime,
+    type WordTaskpaneRuntimeSnapshot,
+  } from "../../lib/shared-runtime";
 
-  declare const Office: any;
-
-  type BridgeSessionLookupResponse = {
-    ok?: boolean;
-    sessions?: {
-      pendingCount?: number;
-      health?: string;
-      snapshot?: (BridgeSessionSnapshot & { app?: string }) | null;
-    }[];
-  };
-
-  function resolveMatchedSession(
-    sessions: NonNullable<BridgeSessionLookupResponse["sessions"]>,
-  ) {
-    const wordSessions = sessions.filter((session) => session.snapshot?.app === "word");
-    const byInstanceId = wordSessions.find(
-      (session) => session.snapshot?.instanceId === controller?.instanceId,
-    );
-    if (byInstanceId) {
-      return {
-        matchedSession: byInstanceId,
-        connectedWordSessions: wordSessions.length,
-        matchedBy: "instanceId" as const,
-      };
-    }
-
-    const documentId =
-      snapshot?.documentId != null && snapshot.documentId.trim().length > 0
-        ? snapshot.documentId
-        : null;
-    const byDocumentIdMatches = documentId
-      ? wordSessions.filter((session) => session.snapshot?.documentId === documentId)
-      : [];
-    const byDocumentId =
-      byDocumentIdMatches.length === 1 ? byDocumentIdMatches[0] : undefined;
-
-    return {
-      matchedSession: byDocumentId,
-      connectedWordSessions: wordSessions.length,
-      matchedBy: byDocumentId ? ("documentId" as const) : null,
-    };
-  }
-
-  let controller: OfficeBridgeController | null = null;
-  let snapshot: BridgeSessionSnapshot | null = null;
-  let liveContext: BridgeLiveContext | null = null;
-  let bridgeEnabled = isBridgeForcedEnabled();
-  let bridgeUrl = resolveConfiguredBridgeUrl();
-  let bridgeStatus: OfficeBridgeConnectionStatus = {
-    enabled: bridgeEnabled,
-    serverUrl: bridgeUrl,
-    phase: bridgeEnabled ? "connecting" : "disabled",
-    isConnected: false,
-    hasConnected: false,
-    lastError: null,
-    sessionHealth: bridgeEnabled ? "registration_pending" : "orphaned",
-    details: {
-      lastWebSocketOpenAt: null,
-      lastHelloSnapshotCapturedAt: null,
-      lastHelloSentAt: null,
-      lastSessionUpdatedAt: null,
-      lastToolCompletedAt: null,
-      lastTimedOutInvoke: null,
-      activeInvokeCount: 0,
-      currentSessionId: null,
-      currentDocumentId: null,
-      lastDocumentSwitchAt: null,
-      lastReconnectAt: null,
-    },
-    diagnostics: [],
-  };
-  let isRefreshing = false;
-  let lastRefreshLabel = "Never";
-  let errorMessage = "";
-  let serverSessionRegistered = false;
-  let connectedSessionCount = 0;
-  let matchedBy: "instanceId" | "documentId" | null = null;
-  let matchedServerSessionId: string | null = null;
-  let serverPendingCount = 0;
-  let serverSessionHealth: string | null = null;
-  let lastRegistrationSyncAt: number | null = null;
-  let lastRegistrationSyncState: "matched" | "pending" | "error" = "pending";
-  let activeRefresh: Promise<void> | null = null;
+  let runtime: WordTaskpaneRuntimeSnapshot = getWordTaskpaneRuntimeSnapshot();
   $: dashboardView = deriveTaskpaneDashboardView({
-    snapshot,
-    bridgeStatus,
-    serverSessionRegistered,
-    connectedSessionCount,
-    matchedBy,
-    matchedServerSessionId,
-    serverPendingCount,
-    serverSessionHealth,
-    lastRegistrationSyncAt,
-    lastRegistrationSyncState,
+    snapshot: runtime.snapshot,
+    bridgeStatus: runtime.bridgeStatus,
+    serverSessionRegistered: runtime.serverSessionRegistered,
+    connectedSessionCount: runtime.connectedSessionCount,
+    matchedBy: runtime.matchedBy,
+    matchedServerSessionId: runtime.matchedServerSessionId,
+    serverPendingCount: runtime.serverPendingCount,
+    serverSessionHealth: runtime.serverSessionHealth,
+    lastRegistrationSyncAt: runtime.lastRegistrationSyncAt,
+    lastRegistrationSyncState: runtime.lastRegistrationSyncState,
+    paneVisibility: runtime.paneVisibility,
+    sharedRuntimeAvailable: runtime.sharedRuntimeAvailable,
+    startupBehavior: runtime.startupBehavior,
   });
 
-  let deferredRefreshTimer: number | null = null;
-  let registrationSyncGeneration = 0;
-
-  function clearMatchedServerState() {
-    serverSessionRegistered = false;
-    connectedSessionCount = 0;
-    matchedBy = null;
-    matchedServerSessionId = null;
-    serverPendingCount = 0;
-    serverSessionHealth = null;
-  }
-
-  function shouldAdoptServerSnapshot(
-    currentSnapshot: BridgeSessionSnapshot | null,
-    nextSnapshot: BridgeSessionSnapshot,
-  ) {
-    if (!currentSnapshot) return true;
-    if (currentSnapshot.sessionId !== nextSnapshot.sessionId) return true;
-    return (nextSnapshot.updatedAt ?? 0) >= (currentSnapshot.updatedAt ?? 0);
-  }
-
-  function syncBridgeStatus() {
-    if (!controller) return;
-    bridgeStatus = controller.getStatus();
-  }
-
-  async function syncSessionRegistration() {
-    const generation = ++registrationSyncGeneration;
-    try {
-      const response = await fetch(
-        resolveBridgeSessionsUrl(bridgeStatus.serverUrl || bridgeUrl),
-      );
-      if (generation !== registrationSyncGeneration) return;
-      if (!response.ok) {
-        clearMatchedServerState();
-        lastRegistrationSyncAt = Date.now();
-        lastRegistrationSyncState = "error";
-        return;
-      }
-      const payload = (await response.json()) as BridgeSessionLookupResponse;
-      if (generation !== registrationSyncGeneration) return;
-      const { matchedSession, connectedWordSessions, matchedBy: nextMatchedBy } = resolveMatchedSession(
-        payload.sessions ?? [],
-      );
-      connectedSessionCount = connectedWordSessions;
-      serverSessionRegistered = Boolean(matchedSession?.snapshot);
-      matchedBy = nextMatchedBy;
-      matchedServerSessionId = matchedSession?.snapshot?.sessionId ?? null;
-      serverPendingCount = matchedSession?.pendingCount ?? 0;
-      serverSessionHealth = matchedSession?.health ?? null;
-      lastRegistrationSyncAt = Date.now();
-      lastRegistrationSyncState = matchedSession?.snapshot ? "matched" : "pending";
-      if (
-        matchedSession?.snapshot &&
-        shouldAdoptServerSnapshot(snapshot, matchedSession.snapshot)
-      ) {
-        snapshot = matchedSession.snapshot;
-        liveContext = matchedSession.snapshot.gateway?.liveContext ?? null;
-      }
-    } catch {
-      if (generation !== registrationSyncGeneration) return;
-      clearMatchedServerState();
-      lastRegistrationSyncAt = Date.now();
-      lastRegistrationSyncState = "error";
-    }
-  }
-
-  function shouldShowRefreshBusyState(reason: string) {
-    return reason === "manual refresh" || reason === "reconnect";
-  }
-
-  async function waitForReconnectReady(timeoutMs = 5_000) {
-    if (!controller) return false;
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      syncBridgeStatus();
-      const status = controller.getStatus();
-      if (status.phase === "connected" && status.isConnected) {
-        return true;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 120));
-    }
-    syncBridgeStatus();
-    return false;
-  }
-
-  async function refreshStatus(reason = "manual refresh") {
-    if (!controller) return;
-    const showBusyState = shouldShowRefreshBusyState(reason);
-    if (activeRefresh) {
-      if (showBusyState) {
-        await activeRefresh;
-      }
-      return;
-    }
-
-    if (showBusyState) {
-      isRefreshing = true;
-    }
-    errorMessage = "";
-    syncBridgeStatus();
-
-    activeRefresh = (async () => {
-      try {
-        const nextSnapshot = await controller.refresh();
-        snapshot = nextSnapshot;
-        liveContext = nextSnapshot?.gateway?.liveContext ?? null;
-        lastRefreshLabel = new Date().toLocaleTimeString();
-        syncBridgeStatus();
-        await syncSessionRegistration();
-      } catch (error) {
-        errorMessage =
-          error instanceof Error ? error.message : "Could not refresh Word bridge status.";
-        syncBridgeStatus();
-        await syncSessionRegistration();
-      }
-    })();
-
-    try {
-      await activeRefresh;
-    } finally {
-      activeRefresh = null;
-      if (showBusyState) {
-        isRefreshing = false;
-      }
-    }
-  }
-
-  function scheduleRefresh(reason: string, delayMs = 160) {
-    if (deferredRefreshTimer !== null) {
-      window.clearTimeout(deferredRefreshTimer);
-      deferredRefreshTimer = null;
-    }
-    deferredRefreshTimer = window.setTimeout(() => {
-      deferredRefreshTimer = null;
-      void refreshStatus(reason);
-    }, delayMs);
-  }
-
   onMount(() => {
-    let unsubscribeBridgeStatus = () => undefined;
-    let detachBridgeEvents = () => undefined;
-    let detachSelectionHandler = () => undefined;
-    let statusPollTimer: number | null = null;
-
-    const handleWindowFocus = () => {
-      scheduleRefresh("window focus");
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") return;
-      scheduleRefresh("visibility change");
-    };
-    const handleTrackingModeChange = () => {
-      scheduleRefresh("tracking mode change");
-    };
-
-    try {
-      const adapter = createWordBridgeAdapter({
-        getRuntimeState: () => deriveWordTaskpaneRuntimeState(bridgeStatus),
-      });
-      controller = startOfficeBridge({
-        app: "word",
-        adapter,
-        enabled: bridgeEnabled,
-        serverUrl: bridgeUrl,
-        forwardConsole: false,
-      });
-      bridgeStatus = controller.getStatus();
-      unsubscribeBridgeStatus = controller.subscribe((status) => {
-        bridgeStatus = status;
-      });
-
-      detachBridgeEvents = attachWordLiveContextBridge(controller);
-      const officeDocument =
-        typeof Office === "undefined" ? undefined : Office?.context?.document;
-      detachSelectionHandler = bindOfficeDocumentHandler(
-        officeDocument,
-        typeof Office === "undefined"
-          ? "DocumentSelectionChanged"
-          : (Office?.EventType?.DocumentSelectionChanged ?? "DocumentSelectionChanged"),
-        () => {
-          scheduleRefresh("selection change");
-        },
-      );
-
-      window.addEventListener("focus", handleWindowFocus);
-      document.addEventListener("visibilitychange", handleVisibilityChange);
-      window.addEventListener(
-        WORD_TRACKING_MODE_CHANGED_EVENT,
-        handleTrackingModeChange,
-      );
-
-      statusPollTimer = window.setInterval(() => {
-        syncBridgeStatus();
-        void syncSessionRegistration();
-      }, 1_500);
-      void refreshStatus("startup");
-    } catch (error) {
-      errorMessage =
-        error instanceof Error && error.message.trim()
-          ? error.message
-          : "Taskpane startup failed before the bridge client initialized.";
-    }
-
+    void ensureWordTaskpaneRuntime();
+    const unsubscribe = subscribeWordTaskpaneRuntime((next) => {
+      runtime = next;
+    });
     return () => {
-      detachBridgeEvents();
-      unsubscribeBridgeStatus();
-      detachSelectionHandler();
-      window.removeEventListener("focus", handleWindowFocus);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener(
-        WORD_TRACKING_MODE_CHANGED_EVENT,
-        handleTrackingModeChange,
-      );
-      controller?.stop();
-      controller = null;
-      if (statusPollTimer !== null) {
-        window.clearInterval(statusPollTimer);
-      }
-      if (deferredRefreshTimer !== null) {
-        window.clearTimeout(deferredRefreshTimer);
-      }
+      unsubscribe();
     };
   });
 </script>
@@ -356,17 +50,17 @@
         </p>
       </div>
       <div class="hero-actions">
-        <button class="primary-action" on:click={() => void refreshStatus()} disabled={!controller || isRefreshing}>
-          {isRefreshing ? "Refreshing..." : "Refresh"}
+        <button class="primary-action" on:click={() => void refreshWordTaskpaneRuntime()} disabled={runtime.isRefreshing}>
+          {runtime.isRefreshing ? "Refreshing..." : "Refresh"}
         </button>
-        {#if controller}
-          <button class="secondary-action" on:click={async () => {
-            if (!controller) return;
-            await controller.reconnect();
-            await waitForReconnectReady();
-            await refreshStatus("reconnect");
-          }} disabled={!controller || isRefreshing}>
+        {#if runtime.instanceId}
+          <button class="secondary-action" on:click={() => void reconnectWordTaskpaneRuntime()} disabled={runtime.isRefreshing}>
             Reconnect
+          </button>
+        {/if}
+        {#if runtime.sharedRuntimeAvailable && dashboardView.statusLabel === "Connected" && runtime.paneVisibility !== "hidden"}
+          <button class="secondary-action" on:click={() => void hideWordTaskpaneRuntime()} disabled={runtime.isRefreshing}>
+            Hide Panel
           </button>
         {/if}
         <span class:ready={dashboardView.tone === "ready"} class:working={dashboardView.tone === "working"} class:warning={dashboardView.tone === "warning"} class="status-pill">
@@ -377,14 +71,14 @@
 
     <div class="hero-footer">
       <span>{dashboardView.documentCard.summary}</span>
-      <span>Last refreshed {lastRefreshLabel}</span>
+      <span>Last refreshed {runtime.lastRefreshLabel}</span>
     </div>
   </section>
 
-  {#if errorMessage}
+  {#if runtime.errorMessage}
     <section class="panel panel-error">
       <strong>Latest problem</strong>
-      <p>{errorMessage}</p>
+      <p>{runtime.errorMessage}</p>
     </section>
   {/if}
 

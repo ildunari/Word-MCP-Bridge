@@ -20,6 +20,7 @@ const ENABLED_CAPABILITIES: BridgeCapability[] = [
 
 interface CreateWordBridgeAdapterOptions {
   getRuntimeState?: () => BridgeRuntimeStateSlice | null;
+  getDocumentMetadataExtras?: () => Record<string, unknown> | null;
 }
 
 export function createWordBridgeAdapter(
@@ -34,7 +35,9 @@ export function createWordBridgeAdapter(
     },
     async getDocumentMetadata() {
       return {
-        metadata: await readWordDocumentMetadata(),
+        metadata: await readWordDocumentMetadata(
+          options.getDocumentMetadataExtras,
+        ),
       };
     },
     async getLiveContext() {
@@ -111,7 +114,9 @@ async function getDocumentId(): Promise<string> {
   }
 }
 
-async function readWordDocumentMetadata() {
+async function readWordDocumentMetadata(
+  getExtras?: (() => Record<string, unknown> | null) | undefined,
+) {
   try {
     return await Word.run(async (context: any) => {
       const body = context.document.body;
@@ -143,6 +148,7 @@ async function readWordDocumentMetadata() {
         paragraphCount: Array.isArray(paragraphs.items) ? paragraphs.items.length : 0,
         selectionLength: selectedText.length,
         updatedAt: Date.now(),
+        ...(getExtras?.() ?? {}),
       };
     });
   } catch (error) {
@@ -153,6 +159,7 @@ async function readWordDocumentMetadata() {
       warning:
         error instanceof Error ? error.message : "Could not read Word metadata",
       updatedAt: Date.now(),
+      ...(getExtras?.() ?? {}),
     };
   }
 }
@@ -179,11 +186,19 @@ function getDocumentTitle(): string | null {
 
 export function deriveWordTaskpaneRuntimeState(
   status: OfficeBridgeConnectionStatus,
+  options: {
+    paneVisibility?: "visible" | "hidden" | "unknown";
+    sharedRuntimeAvailable?: boolean;
+    startupBehavior?: string;
+  } = {},
 ): BridgeRuntimeStateSlice {
+  const paneVisibility = options.paneVisibility ?? "unknown";
   const connected = status.phase === "connected" && status.isConnected;
   const reconnecting = status.phase === "reconnecting";
   const mode = connected
-    ? "ready"
+    ? paneVisibility === "hidden"
+      ? "ready_hidden"
+      : "ready"
     : reconnecting
       ? "reconnecting"
       : "connecting";
@@ -191,16 +206,27 @@ export function deriveWordTaskpaneRuntimeState(
   return {
     mode,
     taskPhase: status.phase,
+    visibilityMode: paneVisibility,
+    paneVisibility,
+    taskpaneVisibility: paneVisibility,
+    startupBehavior: options.startupBehavior ?? "inactive",
+    startupBehaviorEnabled: options.startupBehavior === "load",
     isStreaming: false,
     permissionMode: "local",
-    waitingState: connected ? null : "bridge_connection",
+    waitingState: connected
+      ? null
+      : paneVisibility === "hidden"
+        ? "taskpane_hidden"
+        : "bridge_connection",
     waitingReason: connected
       ? null
       : (status.lastError?.message ??
         "Waiting for the Word taskpane to finish attaching to the local bridge."),
     handoffSummary: null,
     nextRecommendedAction: connected
-      ? "Use Refresh if the document context looks stale."
+      ? paneVisibility === "hidden"
+        ? "Use the ribbon button or launcher to reopen the panel if you need the dashboard again."
+        : "Use Refresh if the document context looks stale."
       : "Keep the helper open and let the Word taskpane finish connecting.",
     activePlanSummary: null,
     activeTaskSummary: null,
@@ -217,7 +243,17 @@ export function deriveWordTaskpaneRuntimeState(
     threadCount: 0,
     activeThreadId: null,
     degradedGuardrails: connected ? [] : ["bridge_connection"],
-    promptProvenance: null,
+    promptProvenance: options.sharedRuntimeAvailable
+      ? {
+          providerFamily: "office-addin",
+          provider: "word-mcp-bridge",
+          model: "shared-runtime-spike",
+          phase: options.startupBehavior ?? "inactive",
+          contributorCount: 1,
+          doctrineIds: [],
+          runtimeNotes: [`pane:${paneVisibility}`],
+        }
+      : null,
   };
 }
 

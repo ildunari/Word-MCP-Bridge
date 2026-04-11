@@ -9,12 +9,14 @@ function readManifest(name: string): string {
 }
 
 describe("production manifest", () => {
-  it("uses a local-only production taskpane origin", () => {
+  it("uses a local-only production taskpane origin and shared runtime wiring", () => {
     const manifest = readManifest("manifest.prod.xml");
 
     expect(manifest).toContain("https://localhost:3014/taskpane.html");
-    expect(manifest).toContain("https://localhost:3014/commands.html");
     expect(manifest).toContain("<AppDomain>https://localhost:3014</AppDomain>");
+    expect(manifest).toContain('<Set Name="SharedRuntime" MinVersion="1.1"/>');
+    expect(manifest).toContain('<Runtime resid="Taskpane.Url" lifetime="long"/>');
+    expect(manifest).toContain("<FunctionFile resid=\"Taskpane.Url\"/>");
     expect(manifest).not.toContain("word-mcp-bridge.pages.dev");
   });
 
@@ -23,5 +25,8 @@ describe("production manifest", () => {
 
     expect(manifest).toContain("https://localhost:3013/taskpane.html");
     expect(manifest).not.toContain("https://localhost:3014/taskpane.html");
+    expect(manifest).toContain('<Set Name="SharedRuntime" MinVersion="1.1"/>');
+    expect(manifest).toContain('<Runtime resid="Taskpane.Url" lifetime="long"/>');
+    expect(manifest).toContain("<FunctionFile resid=\"Taskpane.Url\"/>");
   });
 });

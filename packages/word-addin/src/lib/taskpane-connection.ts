@@ -60,6 +60,9 @@ interface TaskpaneConnectionViewOptions {
   serverSessionHealth?: string | null;
   lastRegistrationSyncAt?: number | null;
   lastRegistrationSyncState?: "matched" | "pending" | "error";
+  paneVisibility?: "visible" | "hidden" | "unknown";
+  sharedRuntimeAvailable?: boolean;
+  startupBehavior?: string;
 }
 
 export function deriveTaskpaneDashboardView(
@@ -76,6 +79,9 @@ export function deriveTaskpaneDashboardView(
     serverSessionHealth = null,
     lastRegistrationSyncAt = null,
     lastRegistrationSyncState = "pending",
+    paneVisibility = "unknown",
+    sharedRuntimeAvailable = false,
+    startupBehavior = "inactive",
   } = options;
   const liveContext = snapshot?.gateway?.liveContext ?? null;
   const documentMetadata = normalizeMetadata(snapshot);
@@ -252,6 +258,9 @@ export function deriveTaskpaneDashboardView(
       `Server session health: ${humanizeSessionHealth(
         serverSessionHealth ?? (serverPendingCount > 0 ? "registration_pending" : serverSessionRegistered ? "live" : "registration_pending"),
       )}`,
+      `Panel visibility: ${humanizePaneVisibility(paneVisibility)}`,
+      `Shared runtime: ${sharedRuntimeAvailable ? "Available" : "Unavailable"}`,
+      `Startup behavior: ${humanizeStartupBehavior(startupBehavior)}`,
       `Server pending requests: ${serverPendingCount}`,
       `Registration state: ${humanizeRegistrationState(lastRegistrationSyncState)}`,
     ],
@@ -450,6 +459,22 @@ function humanizeRegistrationState(state: "matched" | "pending" | "error"): stri
   if (state === "matched") return "Matched";
   if (state === "error") return "Error";
   return "Pending";
+}
+
+function humanizePaneVisibility(
+  visibility: "visible" | "hidden" | "unknown",
+): string {
+  if (visibility === "visible") return "Visible";
+  if (visibility === "hidden") return "Hidden";
+  return "Unknown";
+}
+
+function humanizeStartupBehavior(value: string): string {
+  if (value === "load") return "Load on open";
+  if (value === "inactive") return "Not enabled";
+  if (value === "unsupported") return "Unsupported";
+  if (value === "error") return "Failed";
+  return value;
 }
 
 function formatTimestamp(value: number | null): string {

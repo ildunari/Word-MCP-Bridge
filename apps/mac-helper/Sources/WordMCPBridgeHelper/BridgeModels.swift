@@ -33,10 +33,36 @@ struct BridgeSessionPayload: Decodable, Identifiable {
         snapshot.documentMetadata ?? BridgeMetadataPayload(
             documentId: snapshot.documentId,
             title: snapshot.appName,
-            url: nil
+            url: nil,
+            visibilityMode: nil,
+            paneVisibility: nil,
+            taskpaneVisibility: nil,
+            startupBehavior: nil,
+            startupBehaviorEnabled: nil
         )
     }
     var id: String { sessionId }
+    var runtimeVisibilityMode: String? {
+        normalizedVisibilityMode(
+            snapshot.runtimeState?.visibilityMode,
+            snapshot.runtimeState?.paneVisibility,
+            snapshot.runtimeState?.taskpaneVisibility,
+            metadata.visibilityMode,
+            metadata.paneVisibility,
+            metadata.taskpaneVisibility
+        )
+    }
+    var isHiddenSharedRuntimeSession: Bool {
+        guard let runtimeVisibilityMode else { return false }
+        return ["hidden", "background", "background_active", "collapsed"]
+            .contains(runtimeVisibilityMode)
+    }
+    var startsAutomatically: Bool {
+        snapshot.runtimeState?.startupBehaviorEnabled == true ||
+            metadata.startupBehaviorEnabled == true ||
+            snapshot.runtimeState?.startupBehavior?.lowercased() == "load" ||
+            metadata.startupBehavior?.lowercased() == "load"
+    }
 
     var documentLabel: String {
         if let title = normalizedTitle(metadata.title) {
@@ -75,6 +101,31 @@ struct BridgeMetadataPayload: Decodable {
     let documentId: String?
     let title: String?
     let url: String?
+    let visibilityMode: String?
+    let paneVisibility: String?
+    let taskpaneVisibility: String?
+    let startupBehavior: String?
+    let startupBehaviorEnabled: Bool?
+
+    init(
+        documentId: String?,
+        title: String?,
+        url: String?,
+        visibilityMode: String? = nil,
+        paneVisibility: String? = nil,
+        taskpaneVisibility: String? = nil,
+        startupBehavior: String? = nil,
+        startupBehaviorEnabled: Bool? = nil
+    ) {
+        self.documentId = documentId
+        self.title = title
+        self.url = url
+        self.visibilityMode = visibilityMode
+        self.paneVisibility = paneVisibility
+        self.taskpaneVisibility = taskpaneVisibility
+        self.startupBehavior = startupBehavior
+        self.startupBehaviorEnabled = startupBehaviorEnabled
+    }
 }
 
 struct BridgeSessionSnapshotPayload: Decodable {
@@ -84,7 +135,50 @@ struct BridgeSessionSnapshotPayload: Decodable {
     let appName: String?
     let documentId: String?
     let documentMetadata: BridgeMetadataPayload?
+    let runtimeState: BridgeRuntimeStatePayload?
     let gateway: BridgeGatewayPayload?
+
+    init(
+        sessionId: String,
+        instanceId: String?,
+        app: String,
+        appName: String?,
+        documentId: String?,
+        documentMetadata: BridgeMetadataPayload?,
+        runtimeState: BridgeRuntimeStatePayload? = nil,
+        gateway: BridgeGatewayPayload?
+    ) {
+        self.sessionId = sessionId
+        self.instanceId = instanceId
+        self.app = app
+        self.appName = appName
+        self.documentId = documentId
+        self.documentMetadata = documentMetadata
+        self.runtimeState = runtimeState
+        self.gateway = gateway
+    }
+}
+
+struct BridgeRuntimeStatePayload: Decodable {
+    let visibilityMode: String?
+    let paneVisibility: String?
+    let taskpaneVisibility: String?
+    let startupBehavior: String?
+    let startupBehaviorEnabled: Bool?
+
+    init(
+        visibilityMode: String? = nil,
+        paneVisibility: String? = nil,
+        taskpaneVisibility: String? = nil,
+        startupBehavior: String? = nil,
+        startupBehaviorEnabled: Bool? = nil
+    ) {
+        self.visibilityMode = visibilityMode
+        self.paneVisibility = paneVisibility
+        self.taskpaneVisibility = taskpaneVisibility
+        self.startupBehavior = startupBehavior
+        self.startupBehaviorEnabled = startupBehaviorEnabled
+    }
 }
 
 struct BridgeGatewayPayload: Decodable {
@@ -236,6 +330,14 @@ struct HelperSetupState {
                 ? "Word is open, but the Word MCP Bridge taskpane is not connected yet."
                 : "The bridge is up. Open Microsoft Word, then open the Word MCP Bridge taskpane."
         }
-        return "A live Word session is connected. Your CLI and MCP hosts can attach now."
+        return "A live Word session is connected. If shared runtime has hidden the panel, your CLI and MCP hosts can still attach now."
     }
+}
+
+private func normalizedVisibilityMode(_ values: String?...) -> String? {
+    values
+        .lazy
+        .compactMap(normalizedText)
+        .map { $0.lowercased() }
+        .first
 }
