@@ -59,8 +59,9 @@ There are two separate processes:
 The MCP server is only useful when:
 
 - the bridge server is running
-- the Word add-in taskpane is open
-- the taskpane is connected to the bridge
+- the Word add-in shared runtime is connected to the bridge
+
+The visible taskpane does not have to stay open once the shared runtime is attached, but the open-pane state may still need to be restored after Word restarts or document windows are reopened.
 
 If you are using the packaged helper app, the helper can now guide the first-run setup and reveal the local production manifest for the one-time Word install step.
 
@@ -76,6 +77,12 @@ office-bridge events word --limit 20
 office-bridge watch-selection word
 office-bridge watch-context word
 office-bridge mcp-serve
+```
+
+Helpful recovery command from the repo:
+
+```bash
+scripts/bridge/launch-word-taskpane.sh --mode open
 ```
 
 ## MCP host setup
@@ -193,3 +200,4 @@ office-bridge mcp-serve --url https://localhost:4017
 - Local bridge TLS is intentionally localhost-oriented.
 - `mcp-serve` wraps the live bridge; it does not replace `serve`.
 - The Word add-in is distributed separately from this package.
+- If a long-lived MCP host still shows the older verbose `list_sessions` payload after an update, restart that host's `office-bridge mcp-serve` process so it reconnects to the current bridge code.

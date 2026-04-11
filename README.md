@@ -27,6 +27,8 @@ The intended user flow is:
 3. Optionally enable `Launch helper at login` in the helper settings.
 4. For normal use, open the helper, open Word, and open the `Word MCP Bridge` taskpane.
 
+After the taskpane connects, shared-runtime mode can keep the bridge alive even if the panel is hidden. The add-in install is persistent, but the visible open-pane state may still need to be restored for a given Word window after Word restarts or document windows are reopened.
+
 The helper app now includes:
 
 - a first-run setup window
@@ -78,6 +80,8 @@ After the one-time install:
 3. Open the `Word MCP Bridge` taskpane in Word.
 4. Use your MCP-capable host.
 
+If the taskpane is not visible after reopening Word, use the helper or `scripts/bridge/launch-word-taskpane.sh --mode open` to restore it quickly. A hidden shared-runtime session still counts as healthy once it is attached.
+
 If you enabled `Launch helper at login` and `Auto-start bridge when helper opens`, the helper should handle most of the local bridge setup automatically.
 
 ## Local developer install
@@ -93,6 +97,12 @@ pnpm start:word
 ```
 
 Then open the `Word MCP Bridge` taskpane in Word.
+
+For faster recovery during local development, you can also use:
+
+```bash
+scripts/bridge/launch-word-taskpane.sh --mode open
+```
 
 Useful local commands:
 
@@ -163,11 +173,13 @@ They are meant to work as repo-local guidance first, and can also be copied into
 - bridge URL and session identifiers
 - document ID and lightweight document stats
 - live selection preview, focus target, and tracking mode
+- shared-runtime visibility state, including hidden-but-active sessions
 - capability state for the current bridge session
 - setup guidance when the bridge session is not yet connected
 
 ## Notes
 
 - The add-in forces bridge mode on by default.
+- With shared-runtime enabled, the bridge can remain usable after the panel is hidden, but Word may still reopen some windows with the taskpane closed.
 - The current capability set is intentionally small: live observation plus privileged raw Office.js execution.
 - The add-in uses the selected protocol-node icon set in `packages/word-addin/public/assets/`.

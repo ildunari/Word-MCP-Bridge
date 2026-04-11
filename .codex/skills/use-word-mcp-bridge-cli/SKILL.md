@@ -42,13 +42,14 @@ Use the JSON/TOML/CLI examples in **`packages/bridge/README.md`** for Claude Des
 2. Is the **Word taskpane** open and connected?
 3. Same **`--url`** for CLI and `mcp-serve`?
 4. If auth issues: **`OFFICE_BRIDGE_TOKEN`** per **`packages/bridge/README.md`**.
-5. If Word was reopened and `list` is empty, the add-in install is still persistent; the missing piece is usually the taskpane open state, so reopen `Word MCP Bridge` from Word's Add-ins UI or use `scripts/bridge/launch-word-taskpane.sh --mode open`.
+5. If Word was reopened and `list` is empty, the add-in install is still persistent; the missing piece is usually the taskpane or shared runtime not being reattached yet, so reopen `Word MCP Bridge` from Word's Add-ins UI or use `scripts/bridge/launch-word-taskpane.sh --mode open`.
 6. If `list` shows two docs but one looks stale, compare `lastSeen`/`pendingCount` from `status` before treating it as a tool bug.
 
 ## Current live behavior notes
 
 - The bridge now exposes a **31-tool Word surface** including precise range reads/writes, scoped formatting, revision scope reads, and fuller comment lifecycle tools.
 - Multi-document sessions are supported. Use the exact `session=` value from `office-bridge list` for destructive checks instead of relying on the generic `word` selector.
+- Shared-runtime mode can keep the bridge alive even after the panel is hidden. A hidden session is healthy if `status` still shows a live Word session.
 - `word_search_and_replace` intentionally fails closed when `targetMatchIndexes` refers to a truncated or unavailable candidate. The safe flow is:
   1. `word_search_text`
   2. inspect returned `matchIndex` values

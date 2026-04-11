@@ -14,6 +14,8 @@ description: Word MCP Bridge workflow for Codex/GPT-style agents — run the loc
 2. MCP process: `office-bridge mcp-serve --url https://localhost:4017` (repo: `pnpm bridge:mcp`). MCP talks to the bridge over HTTP; it is not a substitute for `serve`.
 3. Word add-in taskpane connected to that bridge. The add-in install is persistent, but the open taskpane state may need to be restored after Word or a document window is reopened. Flow and commands: root `README.md`.
 
+Once the shared runtime is attached, the visible panel does not have to remain open. Hidden-but-active sessions are still valid bridge targets.
+
 If tool calls fail with auth errors, use `OFFICE_BRIDGE_TOKEN` as in `packages/bridge/README.md`.
 
 ## Quick setup (from repo)
@@ -57,6 +59,7 @@ With a single connected session, `session` may be omitted; with multiple session
 - The bridge currently exposes a **31-tool Word surface** including exact paragraph range reads/writes, scoped formatting, revision scope reads, and fuller native comment lifecycle tools.
 - `get_bridge_status` is the fastest high-level liveness read. Use it before deeper MCP calls when you suspect stale sessions or reconnect churn.
 - `word_list_documents` is the easiest way to confirm which live Word documents are actually attached before running a write tool.
+- `list_sessions` now returns a compact session record on fresh MCP hosts. If an older host still shows huge `recentEvents` payloads, restart that host's `office-bridge mcp-serve` process.
 - `word_search_and_replace` intentionally fails closed when `targetMatchIndexes` points at a truncated or unavailable candidate. That is the safe path, not a bridge failure.
 - Preferred mutation flow for repeated phrases:
   1. `call_bridge_tool` with `toolName: "word_search_text"`
@@ -65,7 +68,7 @@ With a single connected session, `session` may be omitted; with multiple session
 
 ## If something breaks
 
-- No sessions: verify bridge is running (`pnpm exec office-bridge status` / `list`). If Word was reopened, the add-in install is still present; the usual missing piece is the taskpane being closed, so reopen `Word MCP Bridge` from Word's Add-ins UI or use `scripts/bridge/launch-word-taskpane.sh --mode open`.
+- No sessions: verify bridge is running (`pnpm exec office-bridge status` / `list`). If Word was reopened, the add-in install is still present; the usual missing piece is the taskpane or shared runtime not being reattached yet, so reopen `Word MCP Bridge` from Word's Add-ins UI or use `scripts/bridge/launch-word-taskpane.sh --mode open`.
 - Empty context: check selection/focus in Word; try `get_session_snapshot` for the full picture.
 - One session looks stale while another is healthy: compare `get_bridge_status` output and `get_recent_events` before assuming the tool layer is broken.
 - Unsafe JS rejected: expected without capability — use `call_bridge_tool` or safer RPC paths instead.
