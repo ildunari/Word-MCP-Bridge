@@ -525,7 +525,7 @@ export const WORD_TOOL_CONTRACTS: WordToolContract[] = [
         .optional(),
       spaceBefore: z.number().min(0).optional(),
       spaceAfter: z.number().min(0).optional(),
-      lineSpacing: z.number().min(0).optional(),
+      lineSpacing: z.number().positive().max(144).optional(),
     }),
     parameters: parameters(
       {
@@ -551,8 +551,10 @@ export const WORD_TOOL_CONTRACTS: WordToolContract[] = [
         },
         lineSpacing: {
           type: "number",
-          minimum: 0,
-          description: "Line spacing value.",
+          exclusiveMinimum: 0,
+          maximum: 144,
+          description:
+            "Line spacing in points. Common values are 12 (single), 18 (1.5x), and 24 (double).",
         },
       },
       ["paragraphIndex"],

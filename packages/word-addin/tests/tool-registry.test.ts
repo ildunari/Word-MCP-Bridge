@@ -73,4 +73,18 @@ describe("Word bridge tool registry", () => {
       success: false,
     });
   });
+
+  it("rejects unsafe zero line spacing before Office.js execution", async () => {
+    const tools = createWordBridgeTools();
+    const tool = tools.find((candidate) => candidate.name === "word_set_paragraph_format");
+
+    const result = await tool?.execute("tool-4", {
+      paragraphIndex: 0,
+      lineSpacing: 0,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+    });
+  });
 });

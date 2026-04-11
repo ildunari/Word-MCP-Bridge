@@ -93,4 +93,31 @@ describe("word tool contracts", () => {
       },
     });
   });
+
+  it("rejects unsafe zero line spacing and documents point-based spacing values", () => {
+    const contract = getWordToolContract("word_set_paragraph_format");
+    const lineSpacing = contract?.parameters.properties?.lineSpacing as
+      | Record<string, unknown>
+      | undefined;
+
+    expect(
+      contract?.inputSchema.safeParse({
+        paragraphIndex: 0,
+        lineSpacing: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      contract?.inputSchema.safeParse({
+        paragraphIndex: 0,
+        lineSpacing: 12,
+      }).success,
+    ).toBe(true);
+    expect(lineSpacing).toMatchObject({
+      type: "number",
+      exclusiveMinimum: 0,
+      maximum: 144,
+    });
+    expect(String(lineSpacing?.description ?? "")).toContain("12");
+    expect(String(lineSpacing?.description ?? "")).toContain("points");
+  });
 });
