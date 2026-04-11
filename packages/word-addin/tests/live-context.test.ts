@@ -13,6 +13,7 @@ import {
   resolveConfiguredBridgeUrl,
 } from "../src/lib/bridge-adapter";
 import { resolveWordDocumentTitle } from "../src/lib/document-title";
+import { resolveTableDimensions } from "../src/lib/tools";
 
 function makeBridgeStatus(overrides: Record<string, unknown> = {}) {
   return {
@@ -155,5 +156,32 @@ describe("Word add-in helpers", () => {
 
     expect(adapter.getRuntimeState?.()?.mode).toBe("ready");
     expect(adapter.getRuntimeState?.()?.taskPhase).toBe("connected");
+  });
+
+  it("falls back to first-row cell count when Word reports zero columns", async () => {
+    const sync = vi.fn(async () => undefined);
+    const firstRow = {
+      cells: {
+        items: [{}, {}, {}],
+        load: vi.fn(),
+      },
+    };
+    const table = {
+      rowCount: 2,
+      columnCount: 0,
+      load: vi.fn(),
+      rows: {
+        items: [firstRow, {}],
+        load: vi.fn(),
+      },
+    };
+
+    const dimensions = await resolveTableDimensions({ sync }, table);
+
+    expect(dimensions).toEqual({
+      rowCount: 2,
+      columnCount: 3,
+    });
+    expect(sync).toHaveBeenCalledTimes(2);
   });
 });

@@ -152,6 +152,17 @@ function wordDocumentEntry(session: BridgeSessionRecord) {
   };
 }
 
+export function compactBridgeSessionRecord(session: BridgeSessionRecord) {
+  return {
+    snapshot: session.snapshot,
+    connectedAt: session.connectedAt,
+    lastSeenAt: session.lastSeenAt,
+    pendingCount: session.pendingCount,
+    metrics: session.metrics,
+    health: session.health,
+  };
+}
+
 export function buildBridgeStatusSummary(status: BridgeServerStatus) {
   return {
     startedAt: status.startedAt,
@@ -224,7 +235,7 @@ export async function createOfficeBridgeMcpServer(
 
   function withDisplayMetadata(sessions: BridgeSessionRecord[]) {
     return sessions.map((session) => ({
-      ...session,
+      ...compactBridgeSessionRecord(session),
       display: {
         label: getSessionDocumentLabel(session.snapshot),
         summary: getSessionDocumentSummary(session.snapshot),

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildBridgeStatusSummary,
   bridgeToolExecutionResultToMcpResult,
+  compactBridgeSessionRecord,
   describeBridgeConnectionFailure,
   describeMissingBridgeSession,
 } from "../src/mcp";
@@ -239,6 +240,59 @@ describe("bridgeToolExecutionResultToMcpResult", () => {
           updatedAt: 5,
         },
       ],
+    });
+  });
+
+  it("drops recent event history from list-session style payloads", () => {
+    const compact = compactBridgeSessionRecord({
+      snapshot: {
+        sessionId: "word:doc-2",
+        instanceId: "inst-2",
+        app: "word",
+        appName: "Microsoft Word",
+        documentId: "doc-2",
+        documentMetadata: { title: "Draft.docx" },
+        tools: [{ name: "word_get_document_text" }],
+        host: { href: "https://localhost:3014/taskpane.html" },
+        connectedAt: 1,
+        updatedAt: 5,
+      },
+      connectedAt: 1,
+      lastSeenAt: 6,
+      recentEvents: [{ id: "event-1", event: "session_updated", ts: 7, payload: {} }],
+      pendingCount: 2,
+      metrics: {
+        toolCalls: 7,
+        toolErrors: 1,
+        eventsReceived: 12,
+        connectionDropCount: 0,
+      },
+      health: "live",
+    });
+
+    expect(compact).toEqual({
+      snapshot: {
+        sessionId: "word:doc-2",
+        instanceId: "inst-2",
+        app: "word",
+        appName: "Microsoft Word",
+        documentId: "doc-2",
+        documentMetadata: { title: "Draft.docx" },
+        tools: [{ name: "word_get_document_text" }],
+        host: { href: "https://localhost:3014/taskpane.html" },
+        connectedAt: 1,
+        updatedAt: 5,
+      },
+      connectedAt: 1,
+      lastSeenAt: 6,
+      pendingCount: 2,
+      metrics: {
+        toolCalls: 7,
+        toolErrors: 1,
+        eventsReceived: 12,
+        connectionDropCount: 0,
+      },
+      health: "live",
     });
   });
 });

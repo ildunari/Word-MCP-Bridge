@@ -327,6 +327,37 @@ async function resolveComments(context: any) {
   return comments.items as any[];
 }
 
+export async function resolveTableDimensions(context: any, table: any) {
+  table.load("rowCount,columnCount");
+  const rows = table.rows;
+  rows.load("items");
+  await context.sync();
+
+  const rowCountFromRows = Array.isArray(rows.items) ? rows.items.length : 0;
+  const rowCount =
+    typeof table.rowCount === "number" && table.rowCount > 0
+      ? table.rowCount
+      : rowCountFromRows;
+
+  let columnCount =
+    typeof table.columnCount === "number" && table.columnCount > 0
+      ? table.columnCount
+      : 0;
+
+  if (columnCount <= 0 && rowCountFromRows > 0 && rows.items[0]) {
+    const firstRow = rows.items[0];
+    const cells = firstRow.cells;
+    cells.load("items");
+    await context.sync();
+    columnCount = Array.isArray(cells.items) ? cells.items.length : 0;
+  }
+
+  return {
+    rowCount,
+    columnCount,
+  };
+}
+
 async function findCommentById(context: any, commentId: string) {
   const comments = await resolveComments(context);
   const comment = comments.find((entry) => String(entry.id) === commentId);
@@ -664,9 +695,6 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
       tables.load("items");
       contentControls.load("items");
       await context.sync();
-      for (const table of tables.items) {
-        table.load("rowCount,columnCount");
-      }
       for (const control of contentControls.items) {
         control.load("title,tag,type");
       }
@@ -683,15 +711,21 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
           paragraph.style.toLowerCase().startsWith("heading"),
         );
 
+      const tableSummaries = [];
+      for (const [tableIndex, table] of tables.items.entries()) {
+        const dimensions = await resolveTableDimensions(context, table);
+        tableSummaries.push({
+          tableIndex,
+          rowCount: dimensions.rowCount,
+          columnCount: dimensions.columnCount,
+        });
+      }
+
       return toolSuccess("Read document structure.", {
         paragraphCount: paragraphs.length,
         sectionCount: sections.items.length,
         headings,
-        tables: tables.items.map((table: any, tableIndex: number) => ({
-          tableIndex,
-          rowCount: table.rowCount ?? null,
-          columnCount: table.columnCount ?? null,
-        })),
+        tables: tableSummaries,
         contentControls: contentControls.items.map((control: any, controlIndex: number) => ({
           controlIndex,
           title: control.title ?? null,
@@ -773,12 +807,11 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
 
       const summaries = [];
       for (const [tableIndex, table] of tables.items.entries()) {
-        table.load("rowCount,columnCount");
-        await context.sync();
+        const dimensions = await resolveTableDimensions(context, table);
         let preview: string[][] | null = null;
         if (includeCellPreview) {
-          const rowsToRead = Math.min(2, table.rowCount ?? 0);
-          const colsToRead = Math.min(3, table.columnCount ?? 0);
+          const rowsToRead = Math.min(2, dimensions.rowCount);
+          const colsToRead = Math.min(3, dimensions.columnCount);
           preview = [];
           for (let rowIndex = 0; rowIndex < rowsToRead; rowIndex += 1) {
             const rowValues: string[] = [];
@@ -793,8 +826,8 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
         }
         summaries.push({
           tableIndex,
-          rowCount: table.rowCount ?? null,
-          columnCount: table.columnCount ?? null,
+          rowCount: dimensions.rowCount,
+          columnCount: dimensions.columnCount,
           preview,
         });
       }
@@ -1434,11 +1467,10 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
       if (!table) {
         return toolError(`Table ${tableIndex} does not exist.`);
       }
-      table.load("rowCount,columnCount");
-      await context.sync();
-      if (rowIndex >= (table.rowCount ?? 0) || columnIndex >= (table.columnCount ?? 0)) {
+      const dimensions = await resolveTableDimensions(context, table);
+      if (rowIndex >= dimensions.rowCount || columnIndex >= dimensions.columnCount) {
         return toolError(
-          `Cell (${rowIndex}, ${columnIndex}) is outside table ${tableIndex} with ${table.rowCount ?? 0} row(s) and ${table.columnCount ?? 0} column(s).`,
+          `Cell (${rowIndex}, ${columnIndex}) is outside table ${tableIndex} with ${dimensions.rowCount} row(s) and ${dimensions.columnCount} column(s).`,
         );
       }
       const cell = table.getCell(rowIndex, columnIndex);
