@@ -60,20 +60,25 @@ final class BridgeModelsTests: XCTestCase {
 
         XCTAssertEqual(payload.status.sessionCount, 1)
         XCTAssertEqual(payload.status.sessions.first?.sessionId, "word:doc-1")
-        XCTAssertEqual(payload.status.sessions.first?.metadata?.title, "Draft.docx")
+        XCTAssertEqual(payload.status.sessions.first?.metadata.title, "Draft.docx")
         XCTAssertEqual(payload.status.sessions.first?.capabilities, ["observe", "unsafe_office_js"])
+        XCTAssertEqual(payload.status.sessions.first?.documentLabel, "Draft.docx")
+        XCTAssertEqual(payload.status.sessions.first?.documentSummary, "Document ID doc-1")
     }
 
     func testSetupStateSeparatesBridgeStartupFromWordSessionReadiness() {
         let state = HelperSetupState(
+            taskpaneServerReachable: true,
+            taskpaneServerProcessRunning: true,
+            taskpaneServerStarting: false,
             bridgeReachable: false,
             bridgeProcessRunning: true,
             bridgeStarting: true,
             wordAppRunning: false,
             connectedSessionCount: 0,
             assetAvailability: .init(
-                hostedManifestURL: URL(fileURLWithPath: "/tmp/manifest.xml"),
-                localManifestURL: nil,
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
                 setupGuideURL: nil
             )
         )
@@ -84,14 +89,17 @@ final class BridgeModelsTests: XCTestCase {
 
     func testSetupStatePromptsToOpenWordWhenBridgeIsReadyButWordIsClosed() {
         let state = HelperSetupState(
+            taskpaneServerReachable: true,
+            taskpaneServerProcessRunning: true,
+            taskpaneServerStarting: false,
             bridgeReachable: true,
             bridgeProcessRunning: true,
             bridgeStarting: false,
             wordAppRunning: false,
             connectedSessionCount: 0,
             assetAvailability: .init(
-                hostedManifestURL: URL(fileURLWithPath: "/tmp/manifest.xml"),
-                localManifestURL: nil,
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
                 setupGuideURL: nil
             )
         )
@@ -102,19 +110,80 @@ final class BridgeModelsTests: XCTestCase {
 
     func testSetupStatePromptsToOpenTaskpaneWhenWordIsRunningWithoutSession() {
         let state = HelperSetupState(
+            taskpaneServerReachable: true,
+            taskpaneServerProcessRunning: true,
+            taskpaneServerStarting: false,
             bridgeReachable: true,
             bridgeProcessRunning: true,
             bridgeStarting: false,
             wordAppRunning: true,
             connectedSessionCount: 0,
             assetAvailability: .init(
-                hostedManifestURL: URL(fileURLWithPath: "/tmp/manifest.xml"),
-                localManifestURL: nil,
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
                 setupGuideURL: nil
             )
         )
 
         XCTAssertEqual(state.currentStepLabel, "Open the taskpane")
         XCTAssertEqual(state.currentStepSummary, "Word is open, but the Word MCP Bridge taskpane is not connected yet.")
+    }
+
+    func testSetupStateCallsOutLocalTaskpaneServerBeforeBridge() {
+        let state = HelperSetupState(
+            taskpaneServerReachable: false,
+            taskpaneServerProcessRunning: false,
+            taskpaneServerStarting: false,
+            bridgeReachable: true,
+            bridgeProcessRunning: true,
+            bridgeStarting: false,
+            wordAppRunning: true,
+            connectedSessionCount: 0,
+            assetAvailability: .init(
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
+                setupGuideURL: nil
+            )
+        )
+
+        XCTAssertEqual(state.currentStepLabel, "Start the helper")
+        XCTAssertEqual(
+            state.currentStepSummary,
+            "The helper's local taskpane server is not reachable yet. Reopen the helper before opening the Word MCP Bridge taskpane."
+        )
+    }
+
+    func testSessionUsesFriendlyLabelForUnsavedWordDocument() {
+        let payload = BridgeSessionPayload(
+            snapshot: BridgeSessionSnapshotPayload(
+                sessionId: "word:local-1",
+                instanceId: "instance-1",
+                app: "word",
+                appName: "Microsoft Word",
+                documentId: "word-local:local-1",
+                documentMetadata: BridgeMetadataPayload(
+                    documentId: "word-local:local-1",
+                    title: "Word MCP Bridge",
+                    url: nil
+                ),
+                gateway: nil
+            ),
+            connectedAt: 1,
+            lastSeenAt: 1,
+            pendingCount: 0,
+            metrics: BridgeMetricsPayload(
+                eventCount: 0,
+                toolCallCount: 0,
+                bridgeErrorCount: 0,
+                requestTimeoutCount: 0,
+                connectionDropCount: 0,
+                disconnectedSessionCount: nil,
+                connectedSessionCount: nil,
+                pendingCount: nil
+            )
+        )
+
+        XCTAssertEqual(payload.documentLabel, "Untitled Word document")
+        XCTAssertEqual(payload.documentSummary, "Unsaved local document")
     }
 }

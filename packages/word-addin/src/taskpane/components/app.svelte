@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
-    type OfficeBridgeDiagnosticEntry,
     type OfficeBridgeConnectionStatus,
     type OfficeBridgeController,
     startOfficeBridge,
@@ -12,7 +11,9 @@
   } from "@word-mcp-bridge/bridge/protocol";
   import {
     createWordBridgeAdapter,
+    deriveWordTaskpaneRuntimeState,
     isBridgeForcedEnabled,
+    resolveBridgeSessionsUrl,
     resolveConfiguredBridgeUrl,
   } from "../../lib/bridge-adapter";
   import { bindOfficeDocumentHandler } from "../../lib/components/office-document-events";
@@ -20,14 +21,50 @@
     attachWordLiveContextBridge,
     WORD_TRACKING_MODE_CHANGED_EVENT,
   } from "../../lib/live-context";
-  import { deriveTaskpaneConnectionView } from "../../lib/taskpane-connection";
+  import { deriveTaskpaneDashboardView } from "../../lib/taskpane-connection";
 
   declare const Office: any;
 
-  type ActivityItem = {
-    message: string;
-    at: string;
+  type BridgeSessionLookupResponse = {
+    ok?: boolean;
+    sessions?: {
+      pendingCount?: number;
+      health?: string;
+      snapshot?: (BridgeSessionSnapshot & { app?: string }) | null;
+    }[];
   };
+
+  function resolveMatchedSession(
+    sessions: NonNullable<BridgeSessionLookupResponse["sessions"]>,
+  ) {
+    const wordSessions = sessions.filter((session) => session.snapshot?.app === "word");
+    const byInstanceId = wordSessions.find(
+      (session) => session.snapshot?.instanceId === controller?.instanceId,
+    );
+    if (byInstanceId) {
+      return {
+        matchedSession: byInstanceId,
+        connectedWordSessions: wordSessions.length,
+        matchedBy: "instanceId" as const,
+      };
+    }
+
+    const documentId =
+      snapshot?.documentId != null && snapshot.documentId.trim().length > 0
+        ? snapshot.documentId
+        : null;
+    const byDocumentIdMatches = documentId
+      ? wordSessions.filter((session) => session.snapshot?.documentId === documentId)
+      : [];
+    const byDocumentId =
+      byDocumentIdMatches.length === 1 ? byDocumentIdMatches[0] : undefined;
+
+    return {
+      matchedSession: byDocumentId,
+      connectedWordSessions: wordSessions.length,
+      matchedBy: byDocumentId ? ("documentId" as const) : null,
+    };
+  }
 
   let controller: OfficeBridgeController | null = null;
   let snapshot: BridgeSessionSnapshot | null = null;
@@ -41,135 +78,207 @@
     isConnected: false,
     hasConnected: false,
     lastError: null,
+    sessionHealth: bridgeEnabled ? "registration_pending" : "orphaned",
+    details: {
+      lastWebSocketOpenAt: null,
+      lastHelloSnapshotCapturedAt: null,
+      lastHelloSentAt: null,
+      lastSessionUpdatedAt: null,
+      lastToolCompletedAt: null,
+      lastTimedOutInvoke: null,
+      activeInvokeCount: 0,
+      currentSessionId: null,
+      currentDocumentId: null,
+      lastDocumentSwitchAt: null,
+      lastReconnectAt: null,
+    },
     diagnostics: [],
   };
   let isRefreshing = false;
   let lastRefreshLabel = "Never";
   let errorMessage = "";
-  let activity: ActivityItem[] = [];
-  $: connectionView = deriveTaskpaneConnectionView({ snapshot, bridgeStatus });
-  const mcpCommand = "office-bridge mcp-serve";
-  const localSetupCommands = [
-    "pnpm setup:word",
-    "pnpm bridge:serve",
-    "pnpm dev-server:word",
-    "pnpm start:word",
-  ];
-  const hostedModeCommands = [
-    "office-bridge serve",
-    "office-bridge status",
-    "office-bridge mcp-serve",
-  ];
-  const capabilityDescriptions: Record<string, string> = {
-    observe: "Streams live Word document metadata, focus, and selection context.",
-    unsafe_office_js: "Allows privileged Office.js execution for high-power agents and tools.",
-    tool_call: "Routes tool execution through the live bridge session when supported.",
-  };
+  let serverSessionRegistered = false;
+  let connectedSessionCount = 0;
+  let matchedBy: "instanceId" | "documentId" | null = null;
+  let matchedServerSessionId: string | null = null;
+  let serverPendingCount = 0;
+  let serverSessionHealth: string | null = null;
+  let lastRegistrationSyncAt: number | null = null;
+  let lastRegistrationSyncState: "matched" | "pending" | "error" = "pending";
+  let activeRefresh: Promise<void> | null = null;
+  $: dashboardView = deriveTaskpaneDashboardView({
+    snapshot,
+    bridgeStatus,
+    serverSessionRegistered,
+    connectedSessionCount,
+    matchedBy,
+    matchedServerSessionId,
+    serverPendingCount,
+    serverSessionHealth,
+    lastRegistrationSyncAt,
+    lastRegistrationSyncState,
+  });
 
-  function log(message: string) {
-    activity = [
-      { message, at: new Date().toLocaleTimeString() },
-      ...activity,
-    ].slice(0, 8);
+  let deferredRefreshTimer: number | null = null;
+  let registrationSyncGeneration = 0;
+
+  function clearMatchedServerState() {
+    serverSessionRegistered = false;
+    connectedSessionCount = 0;
+    matchedBy = null;
+    matchedServerSessionId = null;
+    serverPendingCount = 0;
+    serverSessionHealth = null;
+  }
+
+  function shouldAdoptServerSnapshot(
+    currentSnapshot: BridgeSessionSnapshot | null,
+    nextSnapshot: BridgeSessionSnapshot,
+  ) {
+    if (!currentSnapshot) return true;
+    if (currentSnapshot.sessionId !== nextSnapshot.sessionId) return true;
+    return (nextSnapshot.updatedAt ?? 0) >= (currentSnapshot.updatedAt ?? 0);
+  }
+
+  function syncBridgeStatus() {
+    if (!controller) return;
+    bridgeStatus = controller.getStatus();
+  }
+
+  async function syncSessionRegistration() {
+    const generation = ++registrationSyncGeneration;
+    try {
+      const response = await fetch(
+        resolveBridgeSessionsUrl(bridgeStatus.serverUrl || bridgeUrl),
+      );
+      if (generation !== registrationSyncGeneration) return;
+      if (!response.ok) {
+        clearMatchedServerState();
+        lastRegistrationSyncAt = Date.now();
+        lastRegistrationSyncState = "error";
+        return;
+      }
+      const payload = (await response.json()) as BridgeSessionLookupResponse;
+      if (generation !== registrationSyncGeneration) return;
+      const { matchedSession, connectedWordSessions, matchedBy: nextMatchedBy } = resolveMatchedSession(
+        payload.sessions ?? [],
+      );
+      connectedSessionCount = connectedWordSessions;
+      serverSessionRegistered = Boolean(matchedSession?.snapshot);
+      matchedBy = nextMatchedBy;
+      matchedServerSessionId = matchedSession?.snapshot?.sessionId ?? null;
+      serverPendingCount = matchedSession?.pendingCount ?? 0;
+      serverSessionHealth = matchedSession?.health ?? null;
+      lastRegistrationSyncAt = Date.now();
+      lastRegistrationSyncState = matchedSession?.snapshot ? "matched" : "pending";
+      if (
+        matchedSession?.snapshot &&
+        shouldAdoptServerSnapshot(snapshot, matchedSession.snapshot)
+      ) {
+        snapshot = matchedSession.snapshot;
+        liveContext = matchedSession.snapshot.gateway?.liveContext ?? null;
+      }
+    } catch {
+      if (generation !== registrationSyncGeneration) return;
+      clearMatchedServerState();
+      lastRegistrationSyncAt = Date.now();
+      lastRegistrationSyncState = "error";
+    }
+  }
+
+  function shouldShowRefreshBusyState(reason: string) {
+    return reason === "manual refresh" || reason === "reconnect";
+  }
+
+  async function waitForReconnectReady(timeoutMs = 5_000) {
+    if (!controller) return false;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      syncBridgeStatus();
+      const status = controller.getStatus();
+      if (status.phase === "connected" && status.isConnected) {
+        return true;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+    syncBridgeStatus();
+    return false;
   }
 
   async function refreshStatus(reason = "manual refresh") {
     if (!controller) return;
+    const showBusyState = shouldShowRefreshBusyState(reason);
+    if (activeRefresh) {
+      if (showBusyState) {
+        await activeRefresh;
+      }
+      return;
+    }
 
-    isRefreshing = true;
+    if (showBusyState) {
+      isRefreshing = true;
+    }
     errorMessage = "";
+    syncBridgeStatus();
+
+    activeRefresh = (async () => {
+      try {
+        const nextSnapshot = await controller.refresh();
+        snapshot = nextSnapshot;
+        liveContext = nextSnapshot?.gateway?.liveContext ?? null;
+        lastRefreshLabel = new Date().toLocaleTimeString();
+        syncBridgeStatus();
+        await syncSessionRegistration();
+      } catch (error) {
+        errorMessage =
+          error instanceof Error ? error.message : "Could not refresh Word bridge status.";
+        syncBridgeStatus();
+        await syncSessionRegistration();
+      }
+    })();
 
     try {
-      const nextSnapshot = await controller.refresh();
-      snapshot = nextSnapshot;
-      liveContext = nextSnapshot?.gateway?.liveContext ?? null;
-      lastRefreshLabel = new Date().toLocaleTimeString();
-      log(`Updated status after ${reason}.`);
-    } catch (error) {
-      errorMessage =
-        error instanceof Error ? error.message : "Could not refresh Word bridge status.";
-      log(`Refresh failed after ${reason}.`);
+      await activeRefresh;
     } finally {
-      isRefreshing = false;
+      activeRefresh = null;
+      if (showBusyState) {
+        isRefreshing = false;
+      }
     }
   }
 
-  function metadataValue(key: string): string {
-    const metadata = snapshot?.documentMetadata;
-    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-      return "n/a";
+  function scheduleRefresh(reason: string, delayMs = 160) {
+    if (deferredRefreshTimer !== null) {
+      window.clearTimeout(deferredRefreshTimer);
+      deferredRefreshTimer = null;
     }
-
-    const value = (metadata as Record<string, unknown>)[key];
-    if (value == null || value === "") return "n/a";
-    return String(value);
-  }
-
-  function selectionPreview(): string {
-    if (!liveContext?.selection?.hasSelection) return "No current selection";
-    return liveContext.selection.selectedText ?? "Selection exists";
-  }
-
-  function capabilityDescription(capability: string): string {
-    return (
-      capabilityDescriptions[capability] ??
-      "Advertised by the live bridge session for connected MCP or CLI clients."
-    );
-  }
-
-  function connectionLabel(): string {
-    return connectionView.statusLabel;
-  }
-
-  function connectionSummary(): string {
-    return connectionView.subtitle;
-  }
-
-  function resolvedBridgeUrl(): string {
-    return bridgeStatus.serverUrl || bridgeUrl;
-  }
-
-  function diagnosticTimestamp(entry: OfficeBridgeDiagnosticEntry): string {
-    return new Date(entry.at).toLocaleTimeString();
-  }
-
-  function documentHeadline(): string {
-    const title = metadataValue("title");
-    if (title !== "n/a") return title;
-    if (snapshot?.documentId) return snapshot.documentId;
-    return "No document metadata yet";
-  }
-
-  function capabilityCountLabel(): string {
-    const count = snapshot?.gateway?.capabilities?.length ?? 0;
-    return count === 1 ? "1 capability" : `${count} capabilities`;
-  }
-
-  function liveContextUpdatedLabel(): string {
-    if (!liveContext?.updatedAt) return "Waiting for live updates";
-    return new Date(liveContext.updatedAt).toLocaleTimeString();
+    deferredRefreshTimer = window.setTimeout(() => {
+      deferredRefreshTimer = null;
+      void refreshStatus(reason);
+    }, delayMs);
   }
 
   onMount(() => {
     let unsubscribeBridgeStatus = () => undefined;
     let detachBridgeEvents = () => undefined;
     let detachSelectionHandler = () => undefined;
+    let statusPollTimer: number | null = null;
 
     const handleWindowFocus = () => {
-      log("Taskpane regained focus.");
-      void refreshStatus("window focus");
+      scheduleRefresh("window focus");
     };
     const handleVisibilityChange = () => {
-      log("Document visibility changed.");
-      void refreshStatus("visibility change");
+      if (document.visibilityState === "hidden") return;
+      scheduleRefresh("visibility change");
     };
     const handleTrackingModeChange = () => {
-      log("Word tracking mode changed.");
-      void refreshStatus("tracking mode change");
+      scheduleRefresh("tracking mode change");
     };
 
     try {
-      const adapter = createWordBridgeAdapter();
+      const adapter = createWordBridgeAdapter({
+        getRuntimeState: () => deriveWordTaskpaneRuntimeState(bridgeStatus),
+      });
       controller = startOfficeBridge({
         app: "word",
         adapter,
@@ -179,12 +288,6 @@
       });
       bridgeStatus = controller.getStatus();
       unsubscribeBridgeStatus = controller.subscribe((status) => {
-        if (status.phase !== bridgeStatus.phase) {
-          log(`Bridge phase changed to ${status.phase}.`);
-        }
-        if (status.lastError?.at !== bridgeStatus.lastError?.at && status.lastError) {
-          log(`Bridge error: ${status.lastError.message}`);
-        }
         bridgeStatus = status;
       });
 
@@ -197,8 +300,7 @@
           ? "DocumentSelectionChanged"
           : (Office?.EventType?.DocumentSelectionChanged ?? "DocumentSelectionChanged"),
         () => {
-          log("Word selection changed.");
-          void refreshStatus("selection change");
+          scheduleRefresh("selection change");
         },
       );
 
@@ -209,18 +311,16 @@
         handleTrackingModeChange,
       );
 
-      log(
-        controller.enabled
-          ? `Bridge client started for ${bridgeUrl} (resolved to ${resolvedBridgeUrl()}).`
-          : "Bridge client is disabled by query or local storage.",
-      );
+      statusPollTimer = window.setInterval(() => {
+        syncBridgeStatus();
+        void syncSessionRegistration();
+      }, 1_500);
       void refreshStatus("startup");
     } catch (error) {
       errorMessage =
         error instanceof Error && error.message.trim()
           ? error.message
           : "Taskpane startup failed before the bridge client initialized.";
-      log(`Taskpane startup failed: ${errorMessage}`);
     }
 
     return () => {
@@ -235,6 +335,12 @@
       );
       controller?.stop();
       controller = null;
+      if (statusPollTimer !== null) {
+        window.clearInterval(statusPollTimer);
+      }
+      if (deferredRefreshTimer !== null) {
+        window.clearTimeout(deferredRefreshTimer);
+      }
     };
   });
 </script>
@@ -244,232 +350,122 @@
     <div class="hero-top">
       <div>
         <p class="eyebrow">Word MCP Bridge</p>
-        <h1>Live Word connector</h1>
+        <h1>{dashboardView.headline}</h1>
         <p class="lede">
-          {connectionView.subtitle}
+          {dashboardView.subtitle}
         </p>
       </div>
       <div class="hero-actions">
-        <button on:click={() => void refreshStatus()} disabled={!controller || isRefreshing}>
+        <button class="primary-action" on:click={() => void refreshStatus()} disabled={!controller || isRefreshing}>
           {isRefreshing ? "Refreshing..." : "Refresh"}
         </button>
-        <span class:healthy={Boolean(snapshot) && bridgeStatus.isConnected} class="status-pill">
-          {connectionLabel()}
+        {#if controller}
+          <button class="secondary-action" on:click={async () => {
+            if (!controller) return;
+            await controller.reconnect();
+            await waitForReconnectReady();
+            await refreshStatus("reconnect");
+          }} disabled={!controller || isRefreshing}>
+            Reconnect
+          </button>
+        {/if}
+        <span class:ready={dashboardView.tone === "ready"} class:working={dashboardView.tone === "working"} class:warning={dashboardView.tone === "warning"} class="status-pill">
+          {dashboardView.statusLabel}
         </span>
       </div>
     </div>
 
-    <div class="hero-summary">
-      <article class="summary-card">
-        <span class="summary-label">Session state</span>
-        <strong>{connectionLabel()}</strong>
-        <p>{connectionSummary()}</p>
-      </article>
-      <article class="summary-card">
-        <span class="summary-label">Document</span>
-        <strong>{documentHeadline()}</strong>
-        <p>{snapshot?.documentId ?? "Connect Word to populate the current document identity."}</p>
-      </article>
-      <article class="summary-card">
-        <span class="summary-label">Selection</span>
-        <strong>{liveContext?.selection?.hasSelection ? "Live selection" : "No selection"}</strong>
-        <p>{selectionPreview()}</p>
-      </article>
-      <article class="summary-card">
-        <span class="summary-label">Capabilities</span>
-        <strong>{capabilityCountLabel()}</strong>
-        <p>MCP hosts attach through <code>{mcpCommand}</code>.</p>
-      </article>
-    </div>
-
     <div class="hero-footer">
-      <span>Configured bridge endpoint: <code>{bridgeUrl}</code></span>
-      <span>Resolved websocket endpoint: <code>{resolvedBridgeUrl()}</code></span>
-      <span>Last refresh: {lastRefreshLabel}</span>
+      <span>{dashboardView.documentCard.summary}</span>
+      <span>Last refreshed {lastRefreshLabel}</span>
     </div>
   </section>
 
   {#if errorMessage}
     <section class="panel panel-error">
-      <strong>Refresh error</strong>
+      <strong>Latest problem</strong>
       <p>{errorMessage}</p>
     </section>
   {/if}
 
+  {#if dashboardView.recoveryTitle}
+    <section class="panel panel-recovery">
+      <h2>{dashboardView.recoveryTitle}</h2>
+      <p class="panel-lede">{dashboardView.recoveryText}</p>
+      {#if dashboardView.showHelperHint}
+        <p class="helper-hint">If this stays stuck, open Word MCP Bridge Helper.app and confirm Word is connected there.</p>
+      {/if}
+    </section>
+  {/if}
+
   <div class="grid">
-    {#if !snapshot}
-      <section class="panel panel-wide setup-panel">
-        <h2>How to connect</h2>
-        <p class="caption">
-          {connectionSummary()}
-        </p>
-        <div class="setup-grid">
-          <div class="setup-card">
-            <h3>Local developer mode</h3>
-            <ol class="steps">
-              {#each localSetupCommands as command}
-                <li><code>{command}</code></li>
-              {/each}
-            </ol>
-          </div>
-          <div class="setup-card">
-            <h3>Hosted add-in mode</h3>
-            <ol class="steps">
-              {#each hostedModeCommands as command}
-                <li><code>{command}</code></li>
-              {/each}
-            </ol>
-          </div>
-          <div class="setup-card">
-            <h3>Attach your host</h3>
-            <p class="caption compact">
-              Once Word is connected, point Claude Desktop, Cursor, Claude Code, or Codex at the
-              local MCP process:
-            </p>
-            <code class="inline-command">{mcpCommand}</code>
-          </div>
-        </div>
-      </section>
-    {/if}
-
     <section class="panel">
-      <h2>Bridge</h2>
-      <dl>
-        <div>
-          <dt>Enabled</dt>
-          <dd><span class:healthy-text={controller?.enabled}>{controller?.enabled ? "yes" : "no"}</span></dd>
-        </div>
-        <div>
-          <dt>Bridge phase</dt>
-          <dd>{bridgeStatus.phase}</dd>
-        </div>
-        <div>
-          <dt>Bridge URL</dt>
-          <dd><code>{resolvedBridgeUrl()}</code></dd>
-        </div>
-        <div>
-          <dt>Session ID</dt>
-          <dd><code>{snapshot?.sessionId ?? "pending"}</code></dd>
-        </div>
-        <div>
-          <dt>Instance ID</dt>
-          <dd><code>{controller?.instanceId ?? "pending"}</code></dd>
-        </div>
-        <div>
-          <dt>Last refresh</dt>
-          <dd>{lastRefreshLabel}</dd>
-        </div>
-      </dl>
-    </section>
-
-    <section class="panel">
-      <h2>Document</h2>
-      <p class="panel-lede">Word metadata that external tools can reason about immediately.</p>
-      <dl>
-        <div>
-          <dt>Document ID</dt>
-          <dd><code>{snapshot?.documentId ?? "pending"}</code></dd>
-        </div>
-        <div>
-          <dt>Title</dt>
-          <dd>{metadataValue("title")}</dd>
-        </div>
-        <div>
-          <dt>Tracking mode</dt>
-          <dd>{liveContext?.trackingMode ?? metadataValue("trackingMode")}</dd>
-        </div>
-        <div>
-          <dt>Paragraphs</dt>
-          <dd>{metadataValue("paragraphCount")}</dd>
-        </div>
-        <div>
-          <dt>Words</dt>
-          <dd>{metadataValue("wordCount")}</dd>
-        </div>
-        <div>
-          <dt>Characters</dt>
-          <dd>{metadataValue("characterCount")}</dd>
-        </div>
-      </dl>
-    </section>
-
-    <section class="panel">
-      <h2>Live context</h2>
-      <p class="panel-lede">The dynamic view of where the user is and what Word is focused on.</p>
-      <dl>
-        <div>
-          <dt>Focus target</dt>
-          <dd>{liveContext?.focusTarget ?? "unknown"}</dd>
-        </div>
-        <div>
-          <dt>Selection</dt>
-          <dd class="selection-preview">{selectionPreview()}</dd>
-        </div>
-        <div>
-          <dt>Selection style</dt>
-          <dd>{liveContext?.selection?.selectedStyle ?? "n/a"}</dd>
-        </div>
-        <div>
-          <dt>Updated at</dt>
-          <dd>{liveContextUpdatedLabel()}</dd>
-        </div>
-      </dl>
-    </section>
-
-    <section class="panel">
-      <h2>Capabilities</h2>
-      {#if snapshot?.gateway?.capabilities?.length}
-        <ul class="capability-list">
-          {#each snapshot.gateway.capabilities as capability}
-            <li>
-              <strong>{capability}</strong>
-              <span>{capabilityDescription(capability)}</span>
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="muted">No capabilities advertised yet.</p>
+      <span class="card-label">{dashboardView.documentCard.eyebrow}</span>
+      <h2>{dashboardView.documentCard.title}</h2>
+      <p class="panel-lede">{dashboardView.documentCard.summary}</p>
+      {#if dashboardView.documentCard.detail}
+        <p class="card-detail">{dashboardView.documentCard.detail}</p>
       {/if}
-      <p class="caption">
-        This minimal add-in enables live observation plus privileged raw Office.js execution.
-      </p>
     </section>
 
-    <section class="panel panel-wide">
-      <h2>Bridge diagnostics</h2>
-      {#if bridgeStatus.diagnostics.length}
-        <ul class="activity-list">
-          {#each bridgeStatus.diagnostics as item}
-            <li>
-              <div class="activity-copy">
-                <strong class:diagnostic-error={item.level === "error"} class:diagnostic-warn={item.level === "warn"}>
-                  {item.level}
-                </strong>
-                <span>{item.message}</span>
-              </div>
-              <time>{diagnosticTimestamp(item)}</time>
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="muted">No bridge diagnostics captured yet.</p>
+    <section class="panel">
+      <span class="card-label">{dashboardView.selectionCard.eyebrow}</span>
+      <h2>{dashboardView.selectionCard.title}</h2>
+      <p class="panel-lede">{dashboardView.selectionCard.summary}</p>
+      {#if dashboardView.selectionCard.detail}
+        <div class="selection-preview">{dashboardView.selectionCard.detail}</div>
+      {/if}
+    </section>
+
+    <section class="panel">
+      <span class="card-label">{dashboardView.reviewCard.eyebrow}</span>
+      <h2>{dashboardView.reviewCard.title}</h2>
+      <p class="panel-lede">{dashboardView.reviewCard.summary}</p>
+      {#if dashboardView.reviewCard.detail}
+        <p class="card-detail">{dashboardView.reviewCard.detail}</p>
       {/if}
     </section>
 
     <section class="panel panel-wide">
-      <h2>Recent activity</h2>
-      {#if activity.length}
-        <ul class="activity-list">
-          {#each activity as item}
-            <li>
-              <span>{item.message}</span>
-              <time>{item.at}</time>
-            </li>
+      <span class="card-label">{dashboardView.readinessCard.eyebrow}</span>
+      <h2>{dashboardView.readinessCard.title}</h2>
+      <p class="panel-lede">{dashboardView.readinessCard.summary}</p>
+      <ul class="readiness-list">
+        {#each dashboardView.readinessCard.items as item}
+          <li>{item}</li>
+        {/each}
+      </ul>
+      {#if dashboardView.readinessCard.warning}
+        <p class="helper-hint">{dashboardView.readinessCard.warning}</p>
+      {/if}
+    </section>
+
+    <section class="panel">
+      <span class="card-label">{dashboardView.connectionCard.eyebrow}</span>
+      <h2>{dashboardView.connectionCard.title}</h2>
+      <p class="panel-lede">{dashboardView.connectionCard.summary}</p>
+      {#if dashboardView.connectionCard.detail}
+        <p class="card-detail">{dashboardView.connectionCard.detail}</p>
+      {/if}
+      <ul class="readiness-list compact-list">
+        {#each dashboardView.connectionCard.items as item}
+          <li>{item}</li>
+        {/each}
+      </ul>
+    </section>
+
+    <section class="panel">
+      <span class="card-label">{dashboardView.diagnosticsCard.eyebrow}</span>
+      <h2>{dashboardView.diagnosticsCard.title}</h2>
+      <p class="panel-lede">{dashboardView.diagnosticsCard.summary}</p>
+      <details class="diagnostics-drawer">
+        <summary>Show recent connection breadcrumbs</summary>
+        <ul class="readiness-list compact-list">
+          {#each dashboardView.diagnosticsCard.items as item}
+            <li>{item}</li>
           {/each}
         </ul>
-      {:else}
-        <p class="muted">No activity yet.</p>
-      {/if}
+      </details>
     </section>
   </div>
 </div>
@@ -528,11 +524,16 @@
   button {
     border: 0;
     border-radius: 999px;
-    background: #2d5bff;
+    background: #2348d8;
     color: white;
     padding: 10px 16px;
     cursor: pointer;
     font-weight: 600;
+  }
+
+  .secondary-action {
+    background: rgba(35, 72, 216, 0.1);
+    color: #2348d8;
   }
 
   button:disabled {
@@ -549,45 +550,19 @@
     font-weight: 600;
   }
 
-  .status-pill.healthy {
+  .status-pill.ready {
     background: rgba(39, 174, 96, 0.14);
     color: #176c42;
   }
 
-  .hero-summary {
-    margin-top: 18px;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 12px;
+  .status-pill.working {
+    background: rgba(35, 72, 216, 0.12);
+    color: #2348d8;
   }
 
-  .summary-card {
-    border-radius: 16px;
-    padding: 14px;
-    background: rgba(244, 247, 255, 0.88);
-    border: 1px solid rgba(45, 91, 255, 0.08);
-    display: grid;
-    gap: 6px;
-  }
-
-  .summary-card strong {
-    font-size: 15px;
-    color: #162033;
-  }
-
-  .summary-card p {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.45;
-    color: #52617d;
-  }
-
-  .summary-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #61708b;
+  .status-pill.warning {
+    background: rgba(154, 103, 0, 0.14);
+    color: #9a6700;
   }
 
   .hero-footer {
@@ -617,38 +592,21 @@
     grid-column: 1 / -1;
   }
 
-  .setup-panel {
-    display: grid;
-    gap: 14px;
-  }
-
-  .setup-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
-  }
-
-  .setup-card {
-    border-radius: 16px;
-    padding: 16px;
-    background: rgba(244, 247, 255, 0.8);
-    border: 1px solid rgba(25, 40, 72, 0.08);
-  }
-
   h2 {
-    margin: 0 0 14px;
-    font-size: 16px;
-  }
-
-  h3 {
     margin: 0 0 10px;
-    font-size: 15px;
+    font-size: 20px;
   }
 
   .panel-error {
     border-color: rgba(220, 38, 38, 0.2);
     background: rgba(255, 237, 237, 0.92);
     margin-bottom: 16px;
+  }
+
+  .panel-recovery {
+    margin-bottom: 16px;
+    border-color: rgba(35, 72, 216, 0.14);
+    background: rgba(243, 246, 255, 0.92);
   }
 
   .panel-lede {
@@ -658,30 +616,6 @@
     line-height: 1.45;
   }
 
-  dl {
-    display: grid;
-    gap: 12px;
-    margin: 0;
-  }
-
-  dl div {
-    display: grid;
-    gap: 4px;
-  }
-
-  dt {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #6a7892;
-  }
-
-  dd {
-    margin: 0;
-    word-break: break-word;
-    color: #162033;
-  }
-
   .selection-preview {
     padding: 10px 12px;
     border-radius: 12px;
@@ -689,126 +623,49 @@
     line-height: 1.45;
   }
 
-  .capability-list {
-    list-style: none;
-    display: grid;
-    gap: 10px;
-    padding: 0;
+  .card-label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #61708b;
+  }
+
+  .card-detail,
+  .helper-hint {
     margin: 0;
-  }
-
-  .capability-list li {
-    border-radius: 14px;
-    padding: 12px;
-    background: rgba(45, 91, 255, 0.08);
-    border: 1px solid rgba(45, 91, 255, 0.1);
-    display: grid;
-    gap: 4px;
-  }
-
-  .capability-list strong {
-    color: #2447c5;
-    font-size: 13px;
-  }
-
-  .capability-list span {
     color: #52617d;
     font-size: 13px;
-    line-height: 1.45;
+    line-height: 1.5;
   }
 
-  .activity-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: grid;
-    gap: 0;
+  .helper-hint {
+    margin-top: 12px;
   }
 
-  .activity-list li {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 12px;
-    font-size: 14px;
-    padding: 10px 0;
-    border-bottom: 1px solid rgba(25, 40, 72, 0.08);
-  }
-
-  .activity-copy {
-    display: grid;
-    gap: 4px;
-  }
-
-  .activity-copy strong {
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-size: 11px;
-    color: #61708b;
-  }
-
-  .activity-copy span {
-    line-height: 1.45;
-    word-break: break-word;
-  }
-
-  .diagnostic-error {
-    color: #b42318;
-  }
-
-  .diagnostic-warn {
-    color: #9a6700;
-  }
-
-  .activity-list li:last-child {
-    border-bottom: 0;
-    padding-bottom: 0;
-  }
-
-  .activity-list time,
-  .caption,
-  .muted {
-    color: #61708b;
-  }
-
-  .steps {
+  .readiness-list {
     margin: 0;
     padding-left: 18px;
     display: grid;
-    gap: 8px;
+    gap: 10px;
+    color: #162033;
   }
 
-  .healthy-text {
-    color: #176c42;
+  .compact-list {
+    margin-top: 14px;
+    gap: 8px;
+    font-size: 13px;
+  }
+
+  .diagnostics-drawer summary {
+    cursor: pointer;
+    color: #2348d8;
     font-weight: 600;
   }
 
-  code {
-    font-family:
-      ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas,
-      "Liberation Mono", "Courier New", monospace;
-    font-size: 12px;
-  }
-
-  .inline-command {
-    display: inline-block;
-    margin-top: 8px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    background: rgba(25, 40, 72, 0.06);
-  }
-
-  .caption {
-    margin: 14px 0 0;
-    font-size: 13px;
-    line-height: 1.45;
-  }
-
-  .muted {
-    margin: 0;
-  }
-
-  .compact {
-    margin-top: 0;
+  .diagnostics-drawer[open] summary {
+    margin-bottom: 12px;
   }
 </style>

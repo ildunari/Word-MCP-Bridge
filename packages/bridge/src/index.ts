@@ -1,8 +1,11 @@
 export {
   type OfficeBridgeClientOptions,
+  type OfficeBridgeConnectionDetails,
   type OfficeBridgeConnectionPhase,
   type OfficeBridgeConnectionStatus,
   type OfficeBridgeController,
+  type OfficeBridgeInvokeTimeoutDetails,
+  type OfficeBridgeSessionHealth,
   startOfficeBridge,
 } from "./client.js";
 export { DOM_QUERIES } from "./dom-queries.js";
@@ -12,6 +15,12 @@ export {
   describeBridgeConnectionFailure,
   describeMissingBridgeSession,
 } from "./mcp.js";
+export {
+  describeSessionChoice,
+  getSessionDocumentLabel,
+  getSessionDocumentSummary,
+  isUnsavedWordDocument,
+} from "./session-labels.js";
 export {
   BRIDGE_PROTOCOL_VERSION,
   type BridgeApp,
@@ -59,3 +68,11 @@ export {
   toBridgeError,
   uint8ArrayToBase64,
 } from "./protocol.js";
+export {
+  type WordToolContract,
+  type WordToolGroup,
+  getFirstClassWordToolContracts,
+  getWordToolContract,
+  WORD_TOOL_CONTRACTS,
+  WORD_TOOL_CONTRACTS_BY_NAME,
+} from "./word-tool-contracts.js";

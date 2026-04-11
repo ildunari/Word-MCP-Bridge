@@ -75,6 +75,13 @@ export interface BridgeServerStatus {
   };
 }
 
+export type BridgeSessionHealth =
+  | "live"
+  | "registration_pending"
+  | "stale"
+  | "reconnecting"
+  | "orphaned";
+
 export interface BridgeSessionRecord {
   snapshot: BridgeSessionSnapshot;
   connectedAt: number;
@@ -82,6 +89,7 @@ export interface BridgeSessionRecord {
   recentEvents: BridgeStoredEvent[];
   pendingCount: number;
   metrics: BridgeSessionMetrics;
+  health: BridgeSessionHealth;
 }
 
 interface SessionState extends BridgeSessionRecord {
@@ -118,6 +126,7 @@ export interface BridgeServerHandle {
 }
 
 const DEFAULT_CERT_DIR = path.join(homedir(), ".office-addin-dev-certs");
+const STALE_SESSION_AFTER_MS = 10_000;
 
 function jsonResponse(
   res: ServerResponse,
@@ -130,8 +139,6 @@ function jsonResponse(
   res.end(JSON.stringify(payload));
 }
 
-const ALLOWED_HOSTED_BROWSER_ORIGINS = new Set(["word-mcp-bridge.pages.dev"]);
-
 export function isAllowedBrowserOrigin(origin: string | undefined): boolean {
   if (!origin) return false;
   try {
@@ -143,8 +150,7 @@ export function isAllowedBrowserOrigin(origin: string | undefined): boolean {
     if (["localhost", "127.0.0.1"].includes(url.hostname)) {
       return true;
     }
-
-    return ALLOWED_HOSTED_BROWSER_ORIGINS.has(url.hostname);
+    return false;
   } catch {
     return false;
   }
@@ -248,7 +254,22 @@ function publicSessionRecord(session: SessionState): BridgeSessionRecord {
     recentEvents: [...session.recentEvents],
     pendingCount: session.pending.size,
     metrics: { ...session.metrics },
+    health: deriveSessionHealth(session),
   };
+}
+
+function deriveSessionHealth(session: SessionState): BridgeSessionHealth {
+  const idleMs = Date.now() - session.lastSeenAt;
+  if (
+    session.metrics.requestTimeoutCount > 0 ||
+    idleMs > STALE_SESSION_AFTER_MS
+  ) {
+    return "stale";
+  }
+  if (session.pending.size > 0) {
+    return "registration_pending";
+  }
+  return "live";
 }
 
 function createEmptyMetrics(): BridgeSessionMetrics {
@@ -848,6 +869,7 @@ export async function createBridgeServer(
         const next: SessionState = {
           socket,
           snapshot: message.snapshot,
+          health: "live",
           connectedAt: Date.now(),
           lastSeenAt: Date.now(),
           recentEvents: [],
@@ -966,6 +988,21 @@ export async function createBridgeServer(
 
     const requestId = createBridgeId("req");
     const timeoutMs = request.timeoutMs ?? requestTimeoutMs;
+    const timedOutRequestSummary = {
+      requestId,
+      method: request.method,
+      sessionId: request.sessionId,
+      toolName:
+        request.method === "execute_tool" &&
+        request.params &&
+        typeof request.params === "object" &&
+        "toolName" in request.params &&
+        typeof (request.params as { toolName?: unknown }).toolName === "string"
+          ? (request.params as { toolName: string }).toolName
+          : undefined,
+      timeoutMs,
+      pendingCountAtTimeout: 0,
+    };
 
     const promise = new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -973,6 +1010,19 @@ export async function createBridgeServer(
         session.pendingCount = session.pending.size;
         session.metrics.requestTimeoutCount += 1;
         totals.requestTimeoutCount += 1;
+        timedOutRequestSummary.pendingCountAtTimeout = session.pendingCount;
+        addStoredEvent(
+          session,
+          eventLimit,
+          "request_timeout",
+          timedOutRequestSummary,
+          totals,
+        );
+        logger.warn(
+          `[bridge] request timeout session=${request.sessionId} requestId=${requestId} method=${request.method}` +
+            `${timedOutRequestSummary.toolName ? ` tool=${timedOutRequestSummary.toolName}` : ""}` +
+            ` timeoutMs=${timeoutMs} pending=${session.pendingCount}`,
+        );
         reject(
           new Error(
             `Bridge request timed out after ${timeoutMs}ms (${request.method})`,

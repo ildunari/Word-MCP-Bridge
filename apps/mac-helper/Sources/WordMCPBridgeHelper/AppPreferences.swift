@@ -51,7 +51,7 @@ struct SettingsView: View {
             }
 
             Section("Notes") {
-                Text("Hosted installs: add the add-in once from the hosted manifest, then use Word as usual.")
+                Text("Normal installs: add the local production manifest once, then let the helper serve the taskpane from this Mac.")
                 Text("Local dev: use the helper panel’s Actions section when you explicitly want to sideload from this repo.")
             }
 

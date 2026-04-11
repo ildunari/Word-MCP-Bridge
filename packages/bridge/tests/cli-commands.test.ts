@@ -26,6 +26,7 @@ import {
   summarizeExecutionError,
   type BridgeSessionRecord,
 } from "../src/server";
+import { buildSessionSummaryLine } from "../src/session-summary";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -147,6 +148,40 @@ describe("findMatchingSession", () => {
   });
 });
 
+describe("buildSessionSummaryLine", () => {
+  it("uses the human-friendly document label in session summaries", () => {
+    const line = buildSessionSummaryLine(
+      makeRecord({
+        sessionId: "word:demo",
+        app: "word",
+        appName: "Microsoft Word",
+        documentId: "word-local:123",
+        documentMetadata: { title: "Word MCP Bridge" },
+        runtimeState: {
+          mode: "ready",
+          phase: "idle",
+          isStreaming: false,
+          waitingState: null,
+          activePlanSummary: null,
+          lastVerification: null,
+          degradedGuardrails: [],
+          promptProvenance: null,
+          nextRecommendedAction: null,
+          latestCompletion: null,
+          sessionStats: {
+            inputTokens: 400,
+            outputTokens: 600,
+            totalCost: 0.12,
+          },
+        },
+      }).snapshot,
+    );
+
+    expect(line).toContain("Untitled Word document");
+    expect(line).toContain("word:Unsaved local document");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Browser-origin allowlist
 // ---------------------------------------------------------------------------
@@ -157,15 +192,12 @@ describe("isAllowedBrowserOrigin", () => {
     expect(isAllowedBrowserOrigin("https://127.0.0.1:4173")).toBe(true);
   });
 
-  it("allows the hosted pages origin", () => {
-    expect(isAllowedBrowserOrigin("https://word-mcp-bridge.pages.dev")).toBe(
-      true,
-    );
-  });
-
   it("rejects unrelated origins and insecure protocols", () => {
     expect(isAllowedBrowserOrigin("http://localhost:3013")).toBe(false);
     expect(isAllowedBrowserOrigin("https://example.com")).toBe(false);
+    expect(isAllowedBrowserOrigin("https://word-mcp-bridge.pages.dev")).toBe(
+      false,
+    );
   });
 });
 

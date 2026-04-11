@@ -10,8 +10,14 @@ struct BridgeLaunchSpec: Equatable {
 
 @MainActor
 final class BridgeController: NSObject, ObservableObject {
+    nonisolated private static let bridgeAutoStartRetryInterval: TimeInterval = 10
+    nonisolated private static let taskpaneAutoStartRetryInterval: TimeInterval = 10
+
     @Published private(set) var snapshot: HelperSnapshot?
     @Published private(set) var setupState = HelperSetupState(
+        taskpaneServerReachable: false,
+        taskpaneServerProcessRunning: false,
+        taskpaneServerStarting: false,
         bridgeReachable: false,
         bridgeProcessRunning: false,
         bridgeStarting: false,
@@ -23,13 +29,18 @@ final class BridgeController: NSObject, ObservableObject {
     @Published private(set) var isStarting = false
     @Published private(set) var isStopping = false
     @Published private(set) var lastError: String?
+    @Published private(set) var isTaskpaneServerStarting = false
+    @Published private(set) var taskpaneServerLastError: String?
     @Published private(set) var isWordAddinStarting = false
     @Published private(set) var wordAddinLastError: String?
 
     private var pollTask: Task<Void, Never>?
     private var bridgeProcess: Process?
+    private var taskpaneServerProcess: Process?
     private var wordAddinProcess: Process?
-    private var hasAttemptedAutoStart = false
+    private var isTaskpaneServerReachable = false
+    private var lastBridgeAutoStartAttemptAt: Date?
+    private var lastTaskpaneAutoStartAttemptAt: Date?
     private var previousSnapshot: HelperSnapshot?
     private var previousBridgeReachable = false
     private lazy var session: URLSession = {
@@ -37,6 +48,7 @@ final class BridgeController: NSObject, ObservableObject {
     }()
 
     let baseURL = URL(string: "https://localhost:4017")!
+    let taskpaneBaseURL = URL(string: "https://localhost:3014")!
 
     var isBridgeRunning: Bool {
         setupState.bridgeReachable || setupState.bridgeProcessRunning || isStarting
@@ -58,6 +70,7 @@ final class BridgeController: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.stopTaskpaneServerOnQuit()
                 self?.stopWordAddinProcessOnQuit()
             }
         }
@@ -72,19 +85,27 @@ final class BridgeController: NSObject, ObservableObject {
         pollTask = Task { [weak self] in
             guard let self else { return }
             self.updateSetupState()
-            self.autoStartBridgeIfNeeded()
             await self.requestNotificationsIfNeeded()
             while !Task.isCancelled {
-                await self.refresh()
+                self.autoStartTaskpaneServerIfNeeded()
+                self.autoStartBridgeIfNeeded()
+                await self.refresh(showLoading: false)
+                await self.refreshTaskpaneServer()
                 try? await Task.sleep(for: .seconds(3))
             }
         }
     }
 
-    func refresh() async {
-        isLoading = true
+    func refresh(showLoading: Bool = true) async {
+        if showLoading {
+            isLoading = true
+        }
 
-        defer { isLoading = false }
+        defer {
+            if showLoading {
+                isLoading = false
+            }
+        }
 
         do {
             let response: BridgeServerStatusResponse = try await requestJSON(path: "/status")
@@ -142,7 +163,7 @@ final class BridgeController: NSObject, ObservableObject {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(2))
                 self?.isStarting = false
-                await self?.refresh()
+                await self?.refresh(showLoading: false)
                 if self?.bridgeProcess?.isRunning == true, self?.snapshot == nil, self?.lastError == nil {
                     self?.lastError = "The bridge process started, but the local status endpoint is not reachable yet."
                 }
@@ -172,7 +193,7 @@ final class BridgeController: NSObject, ObservableObject {
                     throw URLError(.badServerResponse)
                 }
                 try? await Task.sleep(for: .seconds(1))
-                await refresh()
+                await refresh(showLoading: false)
             } catch {
                 lastError = "Failed to stop bridge: \(error.localizedDescription)"
             }
@@ -199,8 +220,8 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     func openManifestFolder() {
-        if let hostedManifestURL = resolvedAssetAvailability().hostedManifestURL {
-            NSWorkspace.shared.activateFileViewerSelecting([hostedManifestURL])
+        if let productionManifestURL = resolvedAssetAvailability().productionManifestURL {
+            NSWorkspace.shared.activateFileViewerSelecting([productionManifestURL])
             return
         }
         guard let repoRoot = resolveRepoRoot() else { return }
@@ -215,20 +236,20 @@ final class BridgeController: NSObject, ObservableObject {
         lastError = "Microsoft Word is not installed or could not be found."
     }
 
-    func openHostedManifest() {
-        guard let hostedManifestURL = resolvedAssetAvailability().hostedManifestURL else {
-            lastError = "The hosted manifest is not available in the app bundle or repo."
+    func openProductionManifest() {
+        guard let productionManifestURL = resolvedAssetAvailability().productionManifestURL else {
+            lastError = "The local production manifest is not available in the app bundle or repo."
             return
         }
-        NSWorkspace.shared.activateFileViewerSelecting([hostedManifestURL])
+        NSWorkspace.shared.activateFileViewerSelecting([productionManifestURL])
     }
 
-    func openLocalManifest() {
-        guard let localManifestURL = resolvedAssetAvailability().localManifestURL else {
-            lastError = "The local dev manifest is not available in the app bundle or repo."
+    func openDevelopmentManifest() {
+        guard let developmentManifestURL = resolvedAssetAvailability().developmentManifestURL else {
+            lastError = "The local development manifest is not available in the app bundle or repo."
             return
         }
-        NSWorkspace.shared.activateFileViewerSelecting([localManifestURL])
+        NSWorkspace.shared.activateFileViewerSelecting([developmentManifestURL])
     }
 
     func openSetupGuide() {
@@ -364,6 +385,123 @@ final class BridgeController: NSObject, ObservableObject {
         wordAddinProcess = nil
     }
 
+    func startTaskpaneServer() {
+        guard taskpaneServerProcess?.isRunning != true else { return }
+        let resourcesRoot = Bundle.main.resourceURL
+        guard resolvedTaskpaneAssetRoot(resourcesRoot: resourcesRoot) != nil else {
+            taskpaneServerLastError = "Could not find packaged taskpane assets. Rebuild the helper bundle so it includes the local taskpane files."
+            isTaskpaneServerReachable = false
+            updateSetupState()
+            return
+        }
+        guard let certs = resolvedLocalhostCertificateURLs() else {
+            taskpaneServerLastError = "The localhost HTTPS certificate is missing. Install the Office add-in localhost certificate before opening the Word MCP Bridge taskpane."
+            isTaskpaneServerReachable = false
+            updateSetupState()
+            return
+        }
+        guard let spec = Self.makeTaskpaneServerLaunchSpec(
+            environment: launchEnvironment(),
+            resourcesRoot: resourcesRoot,
+            repoRoot: resolveRepoRoot(),
+            port: 3014,
+            certURL: certs.certURL,
+            keyURL: certs.keyURL
+        ) else {
+            taskpaneServerLastError = "Could not start the local taskpane server. The helper could not find its bundled server script."
+            isTaskpaneServerReachable = false
+            updateSetupState()
+            return
+        }
+
+        isTaskpaneServerStarting = true
+        taskpaneServerLastError = nil
+
+        let process = Process()
+        process.currentDirectoryURL = spec.currentDirectoryURL
+        process.executableURL = URL(fileURLWithPath: spec.command)
+        process.arguments = spec.args
+        process.environment = launchEnvironment()
+
+        let stderrPipe = Pipe()
+        if let nullOut = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/null")) {
+            process.standardOutput = nullOut
+        }
+        process.standardError = stderrPipe
+
+        process.terminationHandler = { [weak self] proc in
+            Task { @MainActor [weak self] in
+                self?.taskpaneServerProcess = nil
+                self?.isTaskpaneServerStarting = false
+                self?.isTaskpaneServerReachable = false
+                if proc.terminationStatus != 0 {
+                    let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    let text = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let detail = text.isEmpty ? "exit code \(proc.terminationStatus)" : text
+                    self?.taskpaneServerLastError = "Local taskpane server exited: \(detail)"
+                }
+                self?.updateSetupState()
+            }
+        }
+
+        do {
+            try process.run()
+            taskpaneServerProcess = process
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                self?.isTaskpaneServerStarting = false
+                await self?.refreshTaskpaneServer()
+                self?.updateSetupState()
+            }
+        } catch {
+            isTaskpaneServerStarting = false
+            taskpaneServerLastError = "Failed to start the local taskpane server: \(error.localizedDescription)"
+            isTaskpaneServerReachable = false
+            updateSetupState()
+        }
+    }
+
+    func stopTaskpaneServer() {
+        taskpaneServerLastError = nil
+        if let proc = taskpaneServerProcess, proc.isRunning {
+            proc.terminate()
+        }
+        taskpaneServerProcess = nil
+        isTaskpaneServerStarting = false
+        isTaskpaneServerReachable = false
+        updateSetupState()
+    }
+
+    private func stopTaskpaneServerOnQuit() {
+        if let proc = taskpaneServerProcess, proc.isRunning {
+            proc.terminate()
+        }
+        taskpaneServerProcess = nil
+        isTaskpaneServerReachable = false
+    }
+
+    private func refreshTaskpaneServer() async {
+        do {
+            var request = URLRequest(url: taskpaneBaseURL.appending(path: "healthz"))
+            request.timeoutInterval = 2
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) {
+                taskpaneServerLastError = nil
+                isTaskpaneServerReachable = true
+            } else {
+                taskpaneServerLastError = "The helper's local taskpane server responded unexpectedly."
+                isTaskpaneServerReachable = false
+            }
+        } catch {
+            isTaskpaneServerReachable = false
+            if taskpaneServerProcess?.isRunning == true || isTaskpaneServerStarting {
+                taskpaneServerLastError = "Could not connect to the helper's local taskpane server."
+            }
+        }
+        updateSetupState()
+    }
+
     private func requestJSON<T: Decodable>(path: String) async throws -> T {
         let url = baseURL.appending(path: path)
         let (data, response) = try await session.data(from: url)
@@ -435,24 +573,86 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     private func autoStartBridgeIfNeeded() {
-        guard !hasAttemptedAutoStart else { return }
-        hasAttemptedAutoStart = true
-        guard UserDefaults.standard.object(forKey: HelperPreferences.autoStartBridgeOnLaunchKey) == nil
-            || UserDefaults.standard.bool(forKey: HelperPreferences.autoStartBridgeOnLaunchKey)
-        else {
+        guard Self.shouldAutoStartBridge(
+            autoStartPreferenceValue: UserDefaults.standard.object(
+                forKey: HelperPreferences.autoStartBridgeOnLaunchKey
+            ),
+            bridgeReachable: setupState.bridgeReachable,
+            bridgeProcessRunning: bridgeProcess?.isRunning == true,
+            bridgeStarting: isStarting,
+            lastAttemptAt: lastBridgeAutoStartAttemptAt,
+            now: Date()
+        ) else {
             return
         }
-        guard !isBridgeRunning, bridgeProcess?.isRunning != true else { return }
+        lastBridgeAutoStartAttemptAt = Date()
         startBridge()
+    }
+
+    nonisolated static func shouldAutoStartBridge(
+        autoStartPreferenceValue: Any?,
+        bridgeReachable: Bool,
+        bridgeProcessRunning: Bool,
+        bridgeStarting: Bool,
+        lastAttemptAt: Date?,
+        now: Date,
+        retryInterval: TimeInterval = bridgeAutoStartRetryInterval
+    ) -> Bool {
+        let autoStartEnabled: Bool
+        if let value = autoStartPreferenceValue as? Bool {
+            autoStartEnabled = value
+        } else {
+            autoStartEnabled = true
+        }
+
+        guard autoStartEnabled else { return false }
+        guard !bridgeReachable, !bridgeProcessRunning, !bridgeStarting else { return false }
+
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < retryInterval {
+            return false
+        }
+
+        return true
+    }
+
+    private func autoStartTaskpaneServerIfNeeded() {
+        guard Self.shouldAutoStartTaskpaneServer(
+            taskpaneReachable: isTaskpaneServerReachable,
+            taskpaneProcessRunning: taskpaneServerProcess?.isRunning == true,
+            taskpaneStarting: isTaskpaneServerStarting,
+            lastAttemptAt: lastTaskpaneAutoStartAttemptAt,
+            now: Date()
+        ) else {
+            return
+        }
+        lastTaskpaneAutoStartAttemptAt = Date()
+        startTaskpaneServer()
+    }
+
+    nonisolated static func shouldAutoStartTaskpaneServer(
+        taskpaneReachable: Bool,
+        taskpaneProcessRunning: Bool,
+        taskpaneStarting: Bool,
+        lastAttemptAt: Date?,
+        now: Date,
+        retryInterval: TimeInterval = taskpaneAutoStartRetryInterval
+    ) -> Bool {
+        guard !taskpaneReachable, !taskpaneProcessRunning, !taskpaneStarting else { return false }
+
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < retryInterval {
+            return false
+        }
+
+        return true
     }
 
     private func resolvedAssetAvailability() -> HelperAssetAvailability {
         HelperAssetAvailability(
-            hostedManifestURL: resolvedAssetURL(
+            productionManifestURL: resolvedAssetURL(
                 bundledPath: "setup/manifest.prod.xml",
                 repoRelativePath: "packages/word-addin/manifest.prod.xml"
             ),
-            localManifestURL: resolvedAssetURL(
+            developmentManifestURL: resolvedAssetURL(
                 bundledPath: "setup/manifest.xml",
                 repoRelativePath: "packages/word-addin/manifest.xml"
             ),
@@ -479,6 +679,35 @@ final class BridgeController: NSObject, ObservableObject {
         }
 
         return nil
+    }
+
+    private func resolvedTaskpaneAssetRoot(resourcesRoot: URL?) -> URL? {
+        if let resourcesRoot {
+            let bundled = Self.appendingRelativePath("taskpane-dist", to: resourcesRoot)
+            if FileManager.default.fileExists(atPath: bundled.appending(path: "taskpane.html").path()) {
+                return bundled
+            }
+        }
+
+        if let repoRoot = resolveRepoRoot() {
+            let repoDist = Self.appendingRelativePath("packages/word-addin/dist", to: repoRoot)
+            if FileManager.default.fileExists(atPath: repoDist.appending(path: "taskpane.html").path()) {
+                return repoDist
+            }
+        }
+
+        return nil
+    }
+
+    private func resolvedLocalhostCertificateURLs() -> (certURL: URL, keyURL: URL)? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let certURL = home.appending(path: ".office-addin-dev-certs/localhost.crt")
+        let keyURL = home.appending(path: ".office-addin-dev-certs/localhost.key")
+        guard FileManager.default.fileExists(atPath: certURL.path()),
+              FileManager.default.fileExists(atPath: keyURL.path()) else {
+            return nil
+        }
+        return (certURL, keyURL)
     }
 
     nonisolated static func appendingRelativePath(_ relativePath: String, to baseURL: URL) -> URL {
@@ -512,6 +741,66 @@ final class BridgeController: NSObject, ObservableObject {
                 args: ["pnpm", "bridge:serve"],
                 currentDirectoryURL: repoRoot
             )
+        }
+
+        return nil
+    }
+
+    nonisolated static func makeTaskpaneServerLaunchSpec(
+        environment: [String: String],
+        resourcesRoot: URL?,
+        repoRoot: URL?,
+        port: Int,
+        certURL: URL,
+        keyURL: URL
+    ) -> BridgeLaunchSpec? {
+        let bundledScript = resourcesRoot.map { appendingRelativePath("taskpane/serve_taskpane.py", to: $0) }
+        let bundledAssets = resourcesRoot.map { appendingRelativePath("taskpane-dist", to: $0) }
+
+        if let scriptURL = bundledScript,
+           let assetRoot = bundledAssets,
+           FileManager.default.fileExists(atPath: scriptURL.path()),
+           FileManager.default.fileExists(atPath: assetRoot.appending(path: "taskpane.html").path()) {
+            return BridgeLaunchSpec(
+                command: "/usr/bin/env",
+                args: [
+                    "python3",
+                    scriptURL.path,
+                    "--root",
+                    assetRoot.path,
+                    "--port",
+                    "\(port)",
+                    "--cert",
+                    certURL.path,
+                    "--key",
+                    keyURL.path,
+                ],
+                currentDirectoryURL: resourcesRoot
+            )
+        }
+
+        if let repoRoot {
+            let scriptURL = appendingRelativePath("apps/mac-helper/Scripts/serve_taskpane.py", to: repoRoot)
+            let assetRoot = appendingRelativePath("packages/word-addin/dist", to: repoRoot)
+            if FileManager.default.fileExists(atPath: scriptURL.path()),
+               FileManager.default.fileExists(atPath: assetRoot.appending(path: "taskpane.html").path()) {
+                return BridgeLaunchSpec(
+                    command: "/usr/bin/env",
+                    args: [
+                        "python3",
+                        scriptURL.path,
+                        "--root",
+                        assetRoot.path,
+                        "--port",
+                        "\(port)",
+                        "--cert",
+                        certURL.path,
+                        "--key",
+                        keyURL.path,
+                    ],
+                    currentDirectoryURL: repoRoot
+                )
+            }
         }
 
         return nil
@@ -580,6 +869,9 @@ final class BridgeController: NSObject, ObservableObject {
     private func updateSetupState() {
         let assetAvailability = resolvedAssetAvailability()
         setupState = HelperSetupState(
+            taskpaneServerReachable: isTaskpaneServerReachable,
+            taskpaneServerProcessRunning: taskpaneServerProcess?.isRunning == true,
+            taskpaneServerStarting: isTaskpaneServerStarting,
             bridgeReachable: snapshot != nil,
             bridgeProcessRunning: bridgeProcess?.isRunning == true,
             bridgeStarting: isStarting,

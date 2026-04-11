@@ -25,7 +25,8 @@
     ".": "./src/index.ts",
     "./client": "./src/client.ts",
     "./protocol": "./src/protocol.ts",
-    "./server": "./src/server.ts"
+    "./server": "./src/server.ts",
+    "./word-tool-contracts": "./src/word-tool-contracts.ts"
   },
   "publishConfig": {
     "access": "public",
@@ -50,6 +51,10 @@
       "./server": {
         "types": "./dist/server.d.ts",
         "import": "./dist/server.js"
+      },
+      "./word-tool-contracts": {
+        "types": "./dist/word-tool-contracts.d.ts",
+        "import": "./dist/word-tool-contracts.js"
       }
     }
   },

@@ -21,31 +21,67 @@ struct BridgeServerStatusPayload: Decodable {
 
 struct BridgeSessionPayload: Decodable, Identifiable {
     let snapshot: BridgeSessionSnapshotPayload
-    let connectedAt: Int
-    let lastSeenAt: Int
+    let connectedAt: Int64
+    let lastSeenAt: Int64
     let pendingCount: Int
     let metrics: BridgeMetricsPayload
 
     var sessionId: String { snapshot.sessionId }
-    var app: String { snapshot.app }
+    var app: String { snapshot.appName ?? snapshot.app }
     var capabilities: [String] { snapshot.gateway?.capabilities ?? [] }
-    var metadata: BridgeMetadataPayload? {
+    var metadata: BridgeMetadataPayload {
         snapshot.documentMetadata ?? BridgeMetadataPayload(
             documentId: snapshot.documentId,
-            title: nil
+            title: snapshot.appName,
+            url: nil
         )
     }
     var id: String { sessionId }
+
+    var documentLabel: String {
+        if let title = normalizedTitle(metadata.title) {
+            return title
+        }
+        if isUnsavedWordDocument {
+            return "Untitled Word document"
+        }
+        if let documentId = normalizedText(snapshot.documentId),
+           looksLikeFilename(documentId) {
+            return basename(documentId)
+        }
+        return "\(app) document"
+    }
+
+    var documentSummary: String {
+        if isUnsavedWordDocument {
+            return "Unsaved local document"
+        }
+        if let documentId = normalizedText(snapshot.documentId),
+           looksLikeFilename(documentId) {
+            return "Saved document"
+        }
+        if let documentId = normalizedText(snapshot.documentId) {
+            return "Document ID \(documentId)"
+        }
+        return "Live document"
+    }
+
+    private var isUnsavedWordDocument: Bool {
+        snapshot.app == "word" && (snapshot.documentId?.hasPrefix("word-local:") ?? false)
+    }
 }
 
 struct BridgeMetadataPayload: Decodable {
     let documentId: String?
     let title: String?
+    let url: String?
 }
 
 struct BridgeSessionSnapshotPayload: Decodable {
     let sessionId: String
+    let instanceId: String?
     let app: String
+    let appName: String?
     let documentId: String?
     let documentMetadata: BridgeMetadataPayload?
     let gateway: BridgeGatewayPayload?
@@ -71,16 +107,38 @@ struct HelperSnapshot {
     let status: BridgeServerStatusPayload
 }
 
+private func normalizedText(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func normalizedTitle(_ value: String?) -> String? {
+    guard let title = normalizedText(value) else { return nil }
+    if ["word mcp bridge", "microsoft word", "word"].contains(title.lowercased()) {
+        return nil
+    }
+    return title
+}
+
+private func looksLikeFilename(_ value: String) -> Bool {
+    value.contains("/") || value.contains("\\") || value.contains(".")
+}
+
+private func basename(_ value: String) -> String {
+    value.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? value
+}
+
 enum HelperInstallFlow: String, CaseIterable, Identifiable {
-    case hosted
+    case production
     case localDev
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .hosted:
-            return "Hosted add-in"
+        case .production:
+            return "Local production add-in"
         case .localDev:
             return "Local dev"
         }
@@ -88,8 +146,8 @@ enum HelperInstallFlow: String, CaseIterable, Identifiable {
 
     var summary: String {
         switch self {
-        case .hosted:
-            return "Recommended for normal use. Install the hosted Word add-in once, then mostly just open the helper app."
+        case .production:
+            return "Recommended for normal use. Install the local production add-in once, then let the helper serve the taskpane on this machine."
         case .localDev:
             return "For developers working from this repo with the local manifest and dev server."
         }
@@ -97,22 +155,25 @@ enum HelperInstallFlow: String, CaseIterable, Identifiable {
 }
 
 struct HelperAssetAvailability {
-    let hostedManifestURL: URL?
-    let localManifestURL: URL?
+    let productionManifestURL: URL?
+    let developmentManifestURL: URL?
     let setupGuideURL: URL?
 
     static let unavailable = HelperAssetAvailability(
-        hostedManifestURL: nil,
-        localManifestURL: nil,
+        productionManifestURL: nil,
+        developmentManifestURL: nil,
         setupGuideURL: nil
     )
 
-    var hasHostedManifest: Bool { hostedManifestURL != nil }
-    var hasLocalManifest: Bool { localManifestURL != nil }
+    var hasProductionManifest: Bool { productionManifestURL != nil }
+    var hasDevelopmentManifest: Bool { developmentManifestURL != nil }
     var hasSetupGuide: Bool { setupGuideURL != nil }
 }
 
 struct HelperSetupState {
+    let taskpaneServerReachable: Bool
+    let taskpaneServerProcessRunning: Bool
+    let taskpaneServerStarting: Bool
     let bridgeReachable: Bool
     let bridgeProcessRunning: Bool
     let bridgeStarting: Bool
@@ -125,12 +186,18 @@ struct HelperSetupState {
     }
 
     var isReady: Bool {
-        bridgeReachable && hasWordSession
+        taskpaneServerReachable && bridgeReachable && hasWordSession
     }
 
     var currentStepLabel: String {
-        if !assetAvailability.hasHostedManifest {
+        if !assetAvailability.hasProductionManifest {
             return "Install assets missing"
+        }
+        if taskpaneServerStarting {
+            return "Starting local panel"
+        }
+        if !taskpaneServerReachable {
+            return taskpaneServerProcessRunning ? "Waiting for local panel" : "Start the helper"
         }
         if bridgeStarting {
             return "Starting the bridge"
@@ -145,8 +212,16 @@ struct HelperSetupState {
     }
 
     var currentStepSummary: String {
-        if !assetAvailability.hasHostedManifest {
-            return "The helper could not find the hosted add-in manifest yet."
+        if !assetAvailability.hasProductionManifest {
+            return "The helper could not find the local production add-in manifest yet."
+        }
+        if taskpaneServerStarting {
+            return "The helper is starting its local taskpane server so Word can load the side panel from this machine."
+        }
+        if !taskpaneServerReachable {
+            return taskpaneServerProcessRunning
+                ? "The helper started the local taskpane server, but Word cannot reach it yet."
+                : "The helper's local taskpane server is not reachable yet. Reopen the helper before opening the Word MCP Bridge taskpane."
         }
         if bridgeStarting {
             return "The helper launched the local bridge and is waiting for it to become reachable."

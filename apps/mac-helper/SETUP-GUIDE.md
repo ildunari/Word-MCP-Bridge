@@ -3,7 +3,7 @@
 ## Recommended one-time install
 
 1. Open `Word MCP Bridge Helper.app`.
-2. Reveal the hosted manifest from the helper.
+2. Reveal the local production manifest from the helper.
 3. Open Microsoft Word.
 4. In Word, install the add-in using that manifest file.
 5. Open the `Word MCP Bridge` taskpane from the Word ribbon.
@@ -17,7 +17,7 @@
 
 ## If you are developing locally
 
-Use the local manifest instead:
+Use the development manifest instead:
 
 ```bash
 pnpm install
@@ -31,7 +31,8 @@ Then open the taskpane in Word and continue with your normal CLI or MCP workflow
 
 ## MCP reminder
 
-The Word add-in and the local bridge are separate:
+The Word taskpane server, add-in, and local bridge are separate:
 
+- the helper serves the local taskpane UI that Word loads
 - `office-bridge serve` runs the local bridge that Word connects to.
 - `office-bridge mcp-serve` runs the stdio MCP server your agents connect to.

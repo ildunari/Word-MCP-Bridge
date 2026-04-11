@@ -1,5 +1,9 @@
+import type { OfficeBridgeConnectionStatus } from "@word-mcp-bridge/bridge/client";
 import type { BridgeCapability } from "@word-mcp-bridge/bridge/protocol";
+import type { BridgeRuntimeStateSlice } from "@word-mcp-bridge/bridge/protocol";
 import { readWordLiveContext } from "./live-context";
+import { resolveWordDocumentTitle } from "./document-title";
+import { createWordBridgeTools } from "./tools";
 
 declare const Office: any;
 declare const Word: any;
@@ -8,12 +12,23 @@ const FALLBACK_DOCUMENT_ID_KEY = "word-mcp-bridge:fallback-document-id";
 const BRIDGE_ENABLE_STORAGE_KEY = "office-agents-bridge-enabled";
 const BRIDGE_URL_STORAGE_KEY = "office-agents-bridge-url";
 
-const ENABLED_CAPABILITIES: BridgeCapability[] = ["observe", "unsafe_office_js"];
+const ENABLED_CAPABILITIES: BridgeCapability[] = [
+  "observe",
+  "document_edit",
+  "unsafe_office_js",
+];
 
-export function createWordBridgeAdapter() {
+interface CreateWordBridgeAdapterOptions {
+  getRuntimeState?: () => BridgeRuntimeStateSlice | null;
+}
+
+export function createWordBridgeAdapter(
+  options: CreateWordBridgeAdapterOptions = {},
+) {
+  const tools = createWordBridgeTools();
   return {
     metadataTag: "word_context",
-    tools: [],
+    tools,
     async getDocumentId() {
       return getDocumentId();
     },
@@ -27,6 +42,9 @@ export function createWordBridgeAdapter() {
     },
     getCapabilities() {
       return [...ENABLED_CAPABILITIES];
+    },
+    getRuntimeState() {
+      return options.getRuntimeState?.() ?? null;
     },
   };
 }
@@ -48,6 +66,15 @@ export function resolveConfiguredBridgeUrl(): string {
   }
 
   return "wss://localhost:4017/ws";
+}
+
+export function resolveBridgeSessionsUrl(bridgeWebSocketUrl: string): string {
+  const parsed = new URL(bridgeWebSocketUrl);
+  parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+  parsed.pathname = "/sessions";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
 }
 
 export function isBridgeForcedEnabled(): boolean {
@@ -144,17 +171,54 @@ function getOfficeDocumentUrl(): string | null {
 }
 
 function getDocumentTitle(): string | null {
-  const documentUrl = getOfficeDocumentUrl();
-  if (documentUrl) {
-    const basename = documentUrl.split("/").pop()?.trim();
-    if (basename) return basename;
-  }
+  return resolveWordDocumentTitle({
+    documentUrl: getOfficeDocumentUrl(),
+    pageTitle: typeof document !== "undefined" ? document.title : null,
+  });
+}
 
-  if (typeof document !== "undefined" && document.title.trim()) {
-    return document.title.trim();
-  }
+export function deriveWordTaskpaneRuntimeState(
+  status: OfficeBridgeConnectionStatus,
+): BridgeRuntimeStateSlice {
+  const connected = status.phase === "connected" && status.isConnected;
+  const reconnecting = status.phase === "reconnecting";
+  const mode = connected
+    ? "ready"
+    : reconnecting
+      ? "reconnecting"
+      : "connecting";
 
-  return null;
+  return {
+    mode,
+    taskPhase: status.phase,
+    isStreaming: false,
+    permissionMode: "local",
+    waitingState: connected ? null : "bridge_connection",
+    waitingReason: connected
+      ? null
+      : (status.lastError?.message ??
+        "Waiting for the Word taskpane to finish attaching to the local bridge."),
+    handoffSummary: null,
+    nextRecommendedAction: connected
+      ? "Use Refresh if the document context looks stale."
+      : "Keep the helper open and let the Word taskpane finish connecting.",
+    activePlanSummary: null,
+    activeTaskSummary: null,
+    contextBudget: { usagePct: 0, action: "healthy" },
+    lastVerification: null,
+    latestCompletion: null,
+    sessionStats: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalCost: 0,
+      messageCount: 0,
+    },
+    error: status.lastError?.message ?? null,
+    threadCount: 0,
+    activeThreadId: null,
+    degradedGuardrails: connected ? [] : ["bridge_connection"],
+    promptProvenance: null,
+  };
 }
 
 function countWords(text: string): number {

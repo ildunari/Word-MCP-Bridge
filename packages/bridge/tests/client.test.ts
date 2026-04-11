@@ -123,6 +123,11 @@ describe("bridge client", () => {
       focusTarget: "document",
       updatedAt: 123,
     });
+    expect(
+      controller.getStatus().diagnostics.some((entry) =>
+        entry.message.includes("Hello sent for"),
+      ),
+    ).toBe(true);
 
     controller.stop();
   });
@@ -259,6 +264,11 @@ describe("bridge client", () => {
         entry.message.includes("WebSocket closed"),
       ),
     ).toBe(true);
+    expect(
+      controller.getStatus().diagnostics.some((entry) =>
+        entry.message.includes("Scheduling websocket reconnect"),
+      ),
+    ).toBe(true);
 
     controller.stop();
   });
@@ -292,6 +302,105 @@ describe("bridge client", () => {
         entry.message.includes("WebSocket constructor failed"),
       ),
     ).toBe(true);
+
+    controller.stop();
+  });
+
+  it("retries when the initial bridge snapshot fails after the socket opens", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const getDocumentId = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error("Word host not ready"))
+      .mockResolvedValue("doc-1");
+    const controller = startOfficeBridge({
+      app: "word",
+      adapter: {
+        tools: [],
+        getDocumentId,
+      },
+      enabled: true,
+      reconnectBaseMs: 10,
+      reconnectMaxMs: 10,
+    });
+
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+      expect(controller.getStatus().phase).toBe("connected");
+    });
+
+    expect(getDocumentId).toHaveBeenCalledTimes(2);
+    expect(controller.getStatus().lastError).toBeNull();
+    expect(
+      controller.getStatus().diagnostics.some((entry) =>
+        entry.message.includes("Connected socket could not build a bridge snapshot"),
+      ),
+    ).toBe(true);
+
+    controller.stop();
+  });
+
+  it("ignores close events from stale sockets after a newer connection wins", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const controller = startOfficeBridge({
+      app: "word",
+      adapter: { ...adapter },
+      enabled: true,
+      reconnectBaseMs: 10,
+      reconnectMaxMs: 10,
+    });
+
+    await vi.waitFor(() => {
+      expect(controller.getStatus().phase).toBe("connected");
+    });
+
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket?.emit("error");
+
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2);
+      expect(controller.getStatus().phase).toBe("connected");
+    });
+
+    firstSocket?.emit("close", { code: 1006, reason: "stale close" });
+
+    expect(controller.getStatus().phase).toBe("connected");
+
+    controller.stop();
+  });
+
+  it("records diagnostics that distinguish helper polls, taskpane refreshes, stale reloads, and socket drops", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const controller = startOfficeBridge({
+      app: "word",
+      adapter: { ...adapter },
+      enabled: true,
+      reconnectBaseMs: 10,
+      reconnectMaxMs: 10,
+    });
+
+    await vi.waitFor(() => {
+      expect(controller.getStatus().phase).toBe("connected");
+    });
+
+    controller.emitEvent("bridge_status", {
+      status: "helper_poll",
+      source: "mac-helper",
+    } as never);
+    controller.emitEvent("bridge_status", {
+      status: "taskpane_refresh",
+      source: "focus",
+    } as never);
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("beforeunload"));
+    FakeWebSocket.instances[0]?.emit("error");
+
+    await vi.waitFor(() => {
+      const messages = controller.getStatus().diagnostics.map((entry) => entry.message);
+      expect(messages.some((message) => message.includes("Helper poll"))).toBe(true);
+      expect(messages.some((message) => message.includes("Taskpane focus refresh"))).toBe(true);
+      expect(messages.some((message) => message.includes("stale page reload"))).toBe(true);
+      expect(messages.some((message) => message.includes("WebSocket closed"))).toBe(true);
+    });
 
     controller.stop();
   });

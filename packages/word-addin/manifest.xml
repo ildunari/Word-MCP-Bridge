@@ -82,8 +82,8 @@
         <bt:String id="TaskpaneButton.Label" DefaultValue="Open Word MCP Bridge"/>
       </bt:ShortStrings>
       <bt:LongStrings>
-        <bt:String id="GetStarted.Description" DefaultValue="Word MCP Bridge loaded successfully. Use the ribbon button to open the live bridge status panel."/>
-        <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open the Word MCP Bridge status panel"/>
+        <bt:String id="GetStarted.Description" DefaultValue="Word MCP Bridge loaded successfully. Use the ribbon button to open the live document dashboard."/>
+        <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open the Word MCP Bridge document dashboard"/>
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

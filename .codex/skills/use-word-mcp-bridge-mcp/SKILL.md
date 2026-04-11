@@ -12,7 +12,7 @@ description: Word MCP Bridge workflow for Codex/GPT-style agents — run the loc
 
 1. Bridge process: `office-bridge serve` (repo: `pnpm bridge:serve`).
 2. MCP process: `office-bridge mcp-serve --url https://localhost:4017` (repo: `pnpm bridge:mcp`). MCP talks to the bridge over HTTP; it is not a substitute for `serve`.
-3. Word add-in taskpane connected to that bridge. Flow and commands: root `README.md`.
+3. Word add-in taskpane connected to that bridge. The add-in install is persistent, but the open taskpane state may need to be restored after Word or a document window is reopened. Flow and commands: root `README.md`.
 
 If tool calls fail with auth errors, use `OFFICE_BRIDGE_TOKEN` as in `packages/bridge/README.md`.
 
@@ -38,22 +38,36 @@ Use `npx -y @word-mcp-bridge/bridge` in place of `office-bridge` when not global
 Source of truth: `packages/bridge/src/mcp.ts`.
 
 - `list_sessions`
+- `get_bridge_status`
 - `get_session_snapshot` — optional `session`
 - `get_live_context` — optional `session`
 - `get_recent_events` — optional `session`, `limit` (1–200)
 - `call_bridge_tool` — `toolName`, optional `args`, optional `session`
+- `word_list_documents`
 - `run_unsafe_office_js` — `code`; optional `explanation`, `session`; **only if** session has `unsafe_office_js`
 - `vfs_list` — optional `prefix`, `session`
 - `vfs_read` — `path`, optional `encoding` (`text`|`base64`), `session`
 - `vfs_write` — `path`, optional `text` / `dataBase64`, `session`
 - `vfs_delete` — `path`, optional `session`
 
-With a single connected session, `session` may be omitted; with multiple sessions, pass a unique selector (same idea as CLI session matching).
+With a single connected session, `session` may be omitted; with multiple sessions, pass a unique selector from `list_sessions` or `word_list_documents`. Do not assume `word` is a safe selector when two docs are open.
+
+## Current live behavior notes
+
+- The bridge currently exposes a **31-tool Word surface** including exact paragraph range reads/writes, scoped formatting, revision scope reads, and fuller native comment lifecycle tools.
+- `get_bridge_status` is the fastest high-level liveness read. Use it before deeper MCP calls when you suspect stale sessions or reconnect churn.
+- `word_list_documents` is the easiest way to confirm which live Word documents are actually attached before running a write tool.
+- `word_search_and_replace` intentionally fails closed when `targetMatchIndexes` points at a truncated or unavailable candidate. That is the safe path, not a bridge failure.
+- Preferred mutation flow for repeated phrases:
+  1. `call_bridge_tool` with `toolName: "word_search_text"`
+  2. inspect returned `matchIndex`, `paragraphIndex`, and offsets
+  3. rerun `word_search_and_replace` with matching `targetMatchIndexes` and `maxMatches`, or prefer `word_replace_text_range` for exact edits
 
 ## If something breaks
 
-- No sessions: verify bridge is running (`pnpm exec office-bridge status` / `list`) and Word pane is open and connected.
+- No sessions: verify bridge is running (`pnpm exec office-bridge status` / `list`). If Word was reopened, the add-in install is still present; the usual missing piece is the taskpane being closed, so reopen `Word MCP Bridge` from Word's Add-ins UI or use `scripts/bridge/launch-word-taskpane.sh --mode open`.
 - Empty context: check selection/focus in Word; try `get_session_snapshot` for the full picture.
+- One session looks stale while another is healthy: compare `get_bridge_status` output and `get_recent_events` before assuming the tool layer is broken.
 - Unsafe JS rejected: expected without capability — use `call_bridge_tool` or safer RPC paths instead.
 
 ## Docs map

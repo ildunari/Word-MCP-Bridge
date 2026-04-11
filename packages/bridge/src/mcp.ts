@@ -1,7 +1,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type BridgeToolExecutionResult, serializeForJson } from "./protocol.js";
 import { requestJson, type BridgeRequestOptions } from "./http-client.js";
-import { findMatchingSession, type BridgeSessionRecord } from "./server.js";
+import {
+  findMatchingSession,
+  type BridgeServerStatus,
+  type BridgeSessionRecord,
+} from "./server.js";
+import {
+  describeSessionChoice,
+  getSessionDocumentLabel,
+  getSessionDocumentSummary,
+  isUnsavedWordDocument,
+} from "./session-labels.js";
+import {
+  getFirstClassWordToolContracts,
+  type WordToolContract,
+} from "./word-tool-contracts.js";
 import { z } from "zod";
 
 function toStructuredRecord(value: unknown): Record<string, unknown> {
@@ -23,6 +37,19 @@ function buildJsonResult(data: unknown) {
     ],
     structuredContent,
   };
+}
+
+function nestedStructuredContent(result: unknown): Record<string, unknown> | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return null;
+  }
+
+  const candidate = (result as { structuredContent?: unknown }).structuredContent;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    return serializeForJson(candidate) as Record<string, unknown>;
+  }
+
+  return null;
 }
 
 function errorMessage(error: unknown): string {
@@ -103,8 +130,52 @@ export function bridgeToolExecutionResultToMcpResult(
   }
   return {
     content,
-    structuredContent: toStructuredRecord(result),
+    structuredContent:
+      nestedStructuredContent(result.result) ?? toStructuredRecord(result.result),
     isError: result.isError,
+  };
+}
+
+function wordDocumentEntry(session: BridgeSessionRecord) {
+  return {
+    sessionId: session.snapshot.sessionId,
+    instanceId: session.snapshot.instanceId,
+    title: getSessionDocumentLabel(session.snapshot),
+    summary: getSessionDocumentSummary(session.snapshot),
+    documentId: session.snapshot.documentId,
+    isUnsaved: isUnsavedWordDocument(session.snapshot),
+    isActive: session.snapshot.gateway?.liveContext?.focusTarget === "document",
+    capabilities: session.snapshot.gateway?.capabilities ?? [],
+    toolCount: session.snapshot.tools.length,
+    connectedAt: session.snapshot.connectedAt,
+    updatedAt: session.snapshot.updatedAt,
+  };
+}
+
+export function buildBridgeStatusSummary(status: BridgeServerStatus) {
+  return {
+    startedAt: status.startedAt,
+    uptimeMs: status.uptimeMs,
+    host: status.host,
+    port: status.port,
+    httpUrl: status.httpUrl,
+    wsUrl: status.wsUrl,
+    sessionCount: status.sessionCount,
+    totals: status.totals,
+    sessions: status.sessions.map((session) => ({
+      sessionId: session.snapshot.sessionId,
+      instanceId: session.snapshot.instanceId,
+      app: session.snapshot.app,
+      title: getSessionDocumentLabel(session.snapshot),
+      summary: getSessionDocumentSummary(session.snapshot),
+      documentId: session.snapshot.documentId,
+      health: session.health,
+      pendingCount: session.pendingCount,
+      toolCount: session.snapshot.tools.length,
+      connectedAt: session.connectedAt,
+      lastSeenAt: session.lastSeenAt,
+      updatedAt: session.snapshot.updatedAt,
+    })),
   };
 }
 
@@ -151,6 +222,17 @@ export async function createOfficeBridgeMcpServer(
     return response.sessions;
   }
 
+  function withDisplayMetadata(sessions: BridgeSessionRecord[]) {
+    return sessions.map((session) => ({
+      ...session,
+      display: {
+        label: getSessionDocumentLabel(session.snapshot),
+        summary: getSessionDocumentSummary(session.snapshot),
+        selectorHint: describeSessionChoice(session.snapshot),
+      },
+    }));
+  }
+
   async function fetchBridgeStatus() {
     const response = await bridgeRequest<{
       ok: true;
@@ -174,12 +256,62 @@ export async function createOfficeBridgeMcpServer(
     if (matches.length === 1) return matches[0];
     if (matches.length === 0) {
       throw new Error(
-        `No bridge session matches "${selector}". Call "list_sessions" to inspect the available session IDs first.`,
+        `No bridge session matches "${selector}". Call "list_sessions" to inspect the available documents and session IDs first.`,
       );
     }
     throw new Error(
-      `Bridge session selector "${selector}" is ambiguous. Matching sessions: ${matches.map((session) => session.snapshot.sessionId).join(", ")}`,
+      `Bridge session selector "${selector}" is ambiguous. Matching sessions: ${matches.map((session) => describeSessionChoice(session.snapshot)).join(", ")}`,
     );
+  }
+
+  async function resolveWordSession(selector?: string) {
+    const sessions = (await fetchSessions()).filter(
+      (session) => session.snapshot.app === "word",
+    );
+    if (sessions.length === 0) {
+      throw new Error(describeMissingBridgeSession());
+    }
+    if (!selector) {
+      if (sessions.length === 1) return sessions[0];
+      throw new Error(
+        'Multiple Word bridge sessions are connected. Pass a session selector, or call "word_list_documents" first.',
+      );
+    }
+    const matches = findMatchingSession(sessions, selector);
+    if (matches.length === 1) return matches[0];
+    if (matches.length === 0) {
+      throw new Error(
+        `No Word bridge session matches "${selector}". Call "word_list_documents" to inspect the available documents first.`,
+      );
+    }
+    throw new Error(
+      `Word bridge session selector "${selector}" is ambiguous. Matching sessions: ${matches.map((session) => describeSessionChoice(session.snapshot)).join(", ")}`,
+    );
+  }
+
+  async function executeWordBridgeTool(
+    tool: WordToolContract,
+    session: string | undefined,
+    args: Record<string, unknown>,
+  ) {
+    const resolved = await resolveWordSession(session);
+    const advertisedTool = resolved.snapshot.tools.find(
+      (candidate) => candidate.name === tool.name,
+    );
+    if (!advertisedTool) {
+      throw new Error(
+        `The selected Word session does not currently advertise ${tool.name}. Refresh the Word taskpane and retry.`,
+      );
+    }
+    const response = await bridgeRequest<{
+      ok: true;
+      result: BridgeToolExecutionResult;
+    }>(
+      "POST",
+      `/sessions/${encodeURIComponent(resolved.snapshot.sessionId)}/tools/${encodeURIComponent(tool.name)}`,
+      { args },
+    );
+    return bridgeToolExecutionResultToMcpResult(response.result);
   }
 
   server.registerTool(
@@ -188,7 +320,29 @@ export async function createOfficeBridgeMcpServer(
       description:
         "Check whether the local Word MCP Bridge server is reachable, even when no Office sessions are connected yet.",
     },
-    async () => buildJsonResult({ status: await fetchBridgeStatus() }),
+    async () => {
+      const status = (await fetchBridgeStatus()) as BridgeServerStatus;
+      return buildJsonResult({
+        status,
+        summary: buildBridgeStatusSummary(status),
+      });
+    },
+  );
+
+  server.registerTool(
+    "word_list_documents",
+    {
+      description:
+        "List connected live Word documents with session IDs, titles, saved/unsaved state, and session summaries.",
+    },
+    async () => {
+      const sessions = (await fetchSessions()).filter(
+        (session) => session.snapshot.app === "word",
+      );
+      return buildJsonResult({
+        documents: sessions.map(wordDocumentEntry),
+      });
+    },
   );
 
   server.registerTool(
@@ -196,7 +350,7 @@ export async function createOfficeBridgeMcpServer(
     {
       description: "List connected Office bridge sessions.",
     },
-    async () => buildJsonResult({ sessions: await fetchSessions() }),
+    async () => buildJsonResult({ sessions: withDisplayMetadata(await fetchSessions()) }),
   );
 
   server.registerTool(
@@ -425,6 +579,26 @@ export async function createOfficeBridgeMcpServer(
       return buildJsonResult(response.result);
     },
   );
+
+  for (const tool of getFirstClassWordToolContracts()) {
+    server.registerTool(
+      tool.name,
+      {
+        description: tool.description,
+        inputSchema: z
+          .object({
+            session: z.string().optional(),
+          })
+          .and(tool.inputSchema),
+      },
+      async (input) => {
+        const { session, ...args } = input as Record<string, unknown> & {
+          session?: string;
+        };
+        return executeWordBridgeTool(tool, session, args);
+      },
+    );
+  }
 
   return server;
 }

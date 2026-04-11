@@ -32,6 +32,11 @@ import {
   summarizeExecutionError,
 } from "./server.js";
 import { pickUniqueWaitSession } from "./session-selection.js";
+import {
+  describeSessionChoice,
+  getSessionDocumentLabel,
+  getSessionDocumentSummary,
+} from "./session-labels.js";
 import { buildSessionSummaryLine } from "./session-summary.js";
 
 const OPTIONS = {
@@ -271,7 +276,7 @@ async function resolveSession(
   if (matches.length === 1) return matches[0];
   if (matches.length === 0) throw new Error(`No session matches "${selector}"`);
   throw new Error(
-    `Session selector "${selector}" is ambiguous: ${matches.map((s) => s.snapshot.sessionId).join(", ")}`,
+    `Session selector "${selector}" is ambiguous: ${matches.map((s) => describeSessionChoice(s.snapshot)).join(", ")}`,
   );
 }
 
@@ -316,7 +321,7 @@ function printJson(value: unknown) {
 
 function describeSession(session: BridgeSessionRecord): string {
   const ago = Math.round((Date.now() - session.lastSeenAt) / 1000);
-  return `${session.snapshot.sessionId}  app=${session.snapshot.app}  document=${session.snapshot.documentId}  tools=${session.snapshot.tools.length}  lastSeen=${ago}s ago`;
+  return `${getSessionDocumentLabel(session.snapshot)}  app=${session.snapshot.app}  summary=${getSessionDocumentSummary(session.snapshot)}  session=${session.snapshot.sessionId}  tools=${session.snapshot.tools.length}  lastSeen=${ago}s ago`;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +448,7 @@ async function splitSessionArgs(
 
   if (matches.length > 1) {
     throw new Error(
-      `Session selector "${candidate}" is ambiguous: ${matches.map((s) => s.snapshot.sessionId).join(", ")}`,
+      `Session selector "${candidate}" is ambiguous: ${matches.map((s) => describeSessionChoice(s.snapshot)).join(", ")}`,
     );
   }
 

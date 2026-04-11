@@ -1,6 +1,7 @@
 import type { OfficeBridgeController } from "@word-mcp-bridge/bridge/client";
 import type { BridgeLiveContext } from "@word-mcp-bridge/bridge/protocol";
 import { bindOfficeDocumentHandler } from "./components/office-document-events";
+import { resolveWordDocumentTitle } from "./document-title";
 
 declare const Office: any;
 declare const Word: any;
@@ -186,18 +187,12 @@ function getFocusTarget(): string {
 }
 
 function getDocumentTitle(): string | null {
-  if (
-    typeof Office !== "undefined" &&
-    typeof Office?.context?.document?.url === "string"
-  ) {
-    const url = Office.context.document.url.trim();
-    if (url) {
-      const basename = url.split("/").pop()?.trim();
-      if (basename) return basename;
-    }
-  }
-  if (typeof document !== "undefined" && document.title.trim()) {
-    return document.title.trim();
-  }
-  return null;
+  return resolveWordDocumentTitle({
+    documentUrl:
+      typeof Office !== "undefined" &&
+      typeof Office?.context?.document?.url === "string"
+        ? Office.context.document.url
+        : null,
+    pageTitle: typeof document !== "undefined" ? document.title : null,
+  });
 }

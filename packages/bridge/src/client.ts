@@ -79,6 +79,7 @@ export interface OfficeBridgeController {
   readonly enabled: boolean;
   readonly instanceId: string;
   refresh: () => Promise<BridgeSessionSnapshot | null>;
+  reconnect: () => Promise<BridgeSessionSnapshot | null>;
   emitEvent: <K extends BridgeEventName>(
     event: K,
     payload: BridgeEventPayloads[K],
@@ -102,6 +103,34 @@ export interface OfficeBridgeStatusError {
   at: number;
 }
 
+export type OfficeBridgeSessionHealth =
+  | "live"
+  | "registration_pending"
+  | "stale"
+  | "reconnecting"
+  | "orphaned";
+
+export interface OfficeBridgeInvokeTimeoutDetails {
+  requestId: string;
+  method: string;
+  toolName?: string;
+  at: number;
+}
+
+export interface OfficeBridgeConnectionDetails {
+  lastWebSocketOpenAt: number | null;
+  lastHelloSnapshotCapturedAt: number | null;
+  lastHelloSentAt: number | null;
+  lastSessionUpdatedAt: number | null;
+  lastToolCompletedAt: number | null;
+  lastTimedOutInvoke: OfficeBridgeInvokeTimeoutDetails | null;
+  activeInvokeCount: number;
+  currentSessionId: string | null;
+  currentDocumentId: string | null;
+  lastDocumentSwitchAt: number | null;
+  lastReconnectAt: number | null;
+}
+
 export interface OfficeBridgeDiagnosticEntry {
   level: "info" | "warn" | "error";
   message: string;
@@ -115,6 +144,8 @@ export interface OfficeBridgeConnectionStatus {
   isConnected: boolean;
   hasConnected: boolean;
   lastError: OfficeBridgeStatusError | null;
+  sessionHealth: OfficeBridgeSessionHealth;
+  details: OfficeBridgeConnectionDetails;
   diagnostics: OfficeBridgeDiagnosticEntry[];
 }
 
@@ -300,6 +331,20 @@ export function startOfficeBridge(
       isConnected: false,
       hasConnected: false,
       lastError: null,
+      sessionHealth: enabled ? "registration_pending" : "orphaned",
+      details: {
+        lastWebSocketOpenAt: null,
+        lastHelloSnapshotCapturedAt: null,
+        lastHelloSentAt: null,
+        lastSessionUpdatedAt: null,
+        lastToolCompletedAt: null,
+        lastTimedOutInvoke: null,
+        activeInvokeCount: 0,
+        currentSessionId: null,
+        currentDocumentId: null,
+        lastDocumentSwitchAt: null,
+        lastReconnectAt: null,
+      },
       diagnostics: [],
     },
   };
@@ -318,20 +363,43 @@ export function startOfficeBridge(
     status: OfficeBridgeConnectionStatus,
   ): OfficeBridgeConnectionStatus => ({
     ...status,
+    details: { ...status.details },
     diagnostics: [...status.diagnostics],
   });
+
+  const deriveSessionHealth = (
+    status: OfficeBridgeConnectionStatus,
+  ): OfficeBridgeSessionHealth => {
+    if (!status.enabled) return "orphaned";
+    if (status.phase === "reconnecting" || status.phase === "disconnected") {
+      return "reconnecting";
+    }
+    if (!status.details.currentSessionId) {
+      return status.hasConnected ? "registration_pending" : "orphaned";
+    }
+    if (!status.isConnected || status.phase === "connecting") {
+      return "registration_pending";
+    }
+    if (status.details.lastTimedOutInvoke) {
+      return "stale";
+    }
+    return "live";
+  };
 
   const publishStatus = (next: Partial<OfficeBridgeConnectionStatus>) => {
     const merged: OfficeBridgeConnectionStatus = {
       ...state.status,
       ...next,
     };
+    merged.sessionHealth = deriveSessionHealth(merged);
     const changed =
       merged.phase !== state.status.phase ||
       merged.isConnected !== state.status.isConnected ||
       merged.hasConnected !== state.status.hasConnected ||
       merged.lastError?.message !== state.status.lastError?.message ||
       merged.lastError?.at !== state.status.lastError?.at ||
+      merged.sessionHealth !== state.status.sessionHealth ||
+      merged.details !== state.status.details ||
       merged.diagnostics !== state.status.diagnostics;
     state.status = merged;
     if (!changed) return;
@@ -356,6 +424,32 @@ export function startOfficeBridge(
     });
   };
 
+  const updateConnectionDetails = (
+    next: Partial<OfficeBridgeConnectionDetails>,
+  ) => {
+    publishStatus({
+      details: {
+        ...state.status.details,
+        ...next,
+      },
+    });
+  };
+
+  const resetSessionState = (reason: string) => {
+    appendDiagnostic("warn", `Resetting bridge session state (${reason}).`);
+    state.snapshot = null;
+    publishStatus({
+      lastError: null,
+      details: {
+        ...state.status.details,
+        currentSessionId: null,
+        currentDocumentId: null,
+        lastSessionUpdatedAt: null,
+        activeInvokeCount: 0,
+      },
+    });
+  };
+
   const send = (message: BridgeWireMessage) => {
     if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
     state.socket.send(JSON.stringify(message));
@@ -371,16 +465,32 @@ export function startOfficeBridge(
   };
 
   const previousBridgeEventSink = options.adapter.bridgeEventSink;
-  const bridgeEventSink = (event: string, payload: Record<string, unknown>) => {
+    const bridgeEventSink = (event: string, payload: Record<string, unknown>) => {
     previousBridgeEventSink?.(event, payload);
     sendEvent(event, payload);
+    if (event === "bridge_status") {
+      const status = typeof payload.status === "string" ? payload.status : "";
+      const source = typeof payload.source === "string" ? payload.source : undefined;
+      if (status === "helper_poll") {
+        appendDiagnostic(
+          "info",
+          `Helper poll tick completed${source ? ` from ${source}` : ""}.`,
+        );
+      }
+      if (status === "taskpane_refresh") {
+        appendDiagnostic(
+          "info",
+          `Taskpane focus refresh started${source ? ` from ${source}` : ""}.`,
+        );
+      }
+    }
     if (
       event.startsWith("state:") ||
       event.startsWith("message:") ||
       event.startsWith("tool:")
     ) {
       scheduleMicrotask(() => {
-        refresh().catch(() => undefined);
+        refresh(`bridge_event:${event}`).catch(() => undefined);
       });
     }
   };
@@ -399,7 +509,9 @@ export function startOfficeBridge(
     }
   };
 
-  const refresh = async () => {
+  const refresh = async (reason = "refresh") => {
+    appendDiagnostic("info", `Capturing session snapshot (${reason}).`);
+    const previousDocumentId = state.snapshot?.documentId ?? null;
     const snapshot = await captureSessionSnapshot(
       options.app,
       options.adapter,
@@ -408,7 +520,20 @@ export function startOfficeBridge(
       state.snapshot,
     );
     state.snapshot = snapshot;
+    updateConnectionDetails({
+      currentSessionId: snapshot.sessionId,
+      currentDocumentId: snapshot.documentId,
+      lastSessionUpdatedAt: Date.now(),
+      lastDocumentSwitchAt:
+        previousDocumentId != null && previousDocumentId !== snapshot.documentId
+          ? Date.now()
+          : state.status.details.lastDocumentSwitchAt,
+    });
     sendEvent("session_updated", snapshot);
+    appendDiagnostic(
+      "info",
+      `Session snapshot ready for ${snapshot.sessionId} (${reason}).`,
+    );
     return snapshot;
   };
 
@@ -447,8 +572,12 @@ export function startOfficeBridge(
     };
 
     sendEvent("tool_executed", executionResult);
+    updateConnectionDetails({
+      lastToolCompletedAt: Date.now(),
+      lastTimedOutInvoke: null,
+    });
     scheduleMicrotask(() => {
-      refresh().catch((refreshError) => {
+      refresh(`after_tool:${toolName}`).catch((refreshError) => {
         sendEvent("bridge_warning", {
           message: "Failed to refresh session after tool execution",
           error: toBridgeError(refreshError),
@@ -558,7 +687,7 @@ export function startOfficeBridge(
           : content.byteLength,
     });
     scheduleMicrotask(() => {
-      refresh().catch(() => undefined);
+      refresh("after_vfs_write").catch(() => undefined);
     });
     return { success: true, path: params.path };
   };
@@ -571,7 +700,7 @@ export function startOfficeBridge(
     await requireVfs().deleteFile(params.path);
     sendEvent("vfs_deleted", { path: params.path });
     scheduleMicrotask(() => {
-      refresh().catch(() => undefined);
+      refresh("after_vfs_delete").catch(() => undefined);
     });
     return { success: true, path: params.path };
   };
@@ -648,7 +777,7 @@ export function startOfficeBridge(
       result: executionResult,
     });
     scheduleMicrotask(() => {
-      refresh().catch((refreshError) => {
+      refresh("after_unsafe_office_js").catch((refreshError) => {
         sendEvent("bridge_warning", {
           message: "Failed to refresh session after unsafe Office.js execution",
           error: toBridgeError(refreshError),
@@ -683,7 +812,31 @@ export function startOfficeBridge(
   const handleInvoke = (message: BridgeWireMessage) => {
     if (!isBridgeInvokeMessage(message)) return;
 
+    const describeInvoke = () => {
+      if (message.method === "execute_tool") {
+        const params =
+          message.params && typeof message.params === "object"
+            ? (message.params as { toolName?: unknown })
+            : {};
+        const toolName =
+          typeof params.toolName === "string" && params.toolName.trim().length > 0
+            ? params.toolName
+            : "unknown";
+        return `${message.method}:${toolName}`;
+      }
+      return message.method;
+    };
+
+    const startedAt = Date.now();
+    appendDiagnostic(
+      "info",
+      `Received bridge invoke ${describeInvoke()} (${message.requestId}).`,
+    );
+
     runQueued(async () => {
+      updateConnectionDetails({
+        activeInvokeCount: state.status.details.activeInvokeCount + 1,
+      });
       try {
         let result: unknown;
         switch (message.method) {
@@ -696,10 +849,11 @@ export function startOfficeBridge(
             };
             break;
           case "get_session_snapshot":
-            result = state.snapshot ?? (await refresh());
+            result =
+              state.snapshot ?? (await refresh("invoke:get_session_snapshot"));
             break;
           case "refresh_session":
-            result = await refresh();
+            result = await refresh("invoke:refresh_session");
             break;
           case "execute_tool": {
             const params = (message.params ?? {}) as {
@@ -751,7 +905,42 @@ export function startOfficeBridge(
           ok: true,
           result: serializeForJson(result),
         });
+        updateConnectionDetails({
+          activeInvokeCount: Math.max(0, state.status.details.activeInvokeCount - 1),
+          lastTimedOutInvoke: null,
+        });
+        appendDiagnostic(
+          "info",
+          `Completed bridge invoke ${describeInvoke()} (${message.requestId}) in ${Date.now() - startedAt}ms.`,
+        );
       } catch (error) {
+        const errorMessage =
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : "Bridge invoke failed";
+        appendDiagnostic(
+          errorMessage.includes("timed out") ? "warn" : "error",
+          `Bridge invoke ${describeInvoke()} (${message.requestId}) failed after ${Date.now() - startedAt}ms: ${errorMessage}`,
+        );
+        updateConnectionDetails({
+          activeInvokeCount: Math.max(0, state.status.details.activeInvokeCount - 1),
+          ...(errorMessage.includes("timed out")
+            ? {
+                lastTimedOutInvoke: {
+                  requestId: message.requestId,
+                  method: message.method,
+                  toolName:
+                    message.method === "execute_tool" &&
+                    message.params &&
+                    typeof message.params === "object" &&
+                    typeof (message.params as { toolName?: unknown }).toolName === "string"
+                      ? ((message.params as { toolName: string }).toolName)
+                      : undefined,
+                  at: Date.now(),
+                },
+              }
+            : {}),
+        });
         send({
           type: "response",
           requestId: message.requestId,
@@ -774,8 +963,12 @@ export function startOfficeBridge(
     }
   };
 
-  const scheduleReconnect = () => {
+  const scheduleReconnect = (reason = "unspecified") => {
     clearReconnectTimer();
+    appendDiagnostic(
+      "warn",
+      `Scheduling websocket reconnect in ${state.reconnectDelayMs}ms (${reason}).`,
+    );
     state.reconnectTimer = window.setTimeout(() => {
       connect().catch(() => undefined);
     }, state.reconnectDelayMs);
@@ -811,33 +1004,53 @@ export function startOfficeBridge(
         "error",
         `WebSocket constructor failed for ${serverUrl}: ${message}`,
       );
-      scheduleReconnect();
+      scheduleReconnect("constructor_failed");
       return;
     }
     state.socket = socket;
 
     socket.addEventListener("open", () => {
+      if (state.socket !== socket || state.stopped) return;
       appendDiagnostic("info", `WebSocket opened for ${serverUrl}.`);
+      updateConnectionDetails({
+        lastWebSocketOpenAt: Date.now(),
+        lastTimedOutInvoke: null,
+      });
       clearReconnectTimer();
       state.reconnectDelayMs = reconnectBaseMs;
-      refresh()
+      publishStatus({
+        phase: "connected",
+        isConnected: true,
+        hasConnected: true,
+        lastError: null,
+      });
+      appendDiagnostic("info", "Capturing hello snapshot for websocket open.");
+      refresh("hello")
         .then((snapshot) => {
+          if (state.socket !== socket || state.stopped) return;
+          updateConnectionDetails({
+            lastHelloSnapshotCapturedAt: Date.now(),
+          });
+          appendDiagnostic(
+            "info",
+            `Hello snapshot captured for ${snapshot.sessionId}.`,
+          );
           send({
             type: "hello",
             role: "office-addin",
             protocolVersion: BRIDGE_PROTOCOL_VERSION,
             snapshot,
           });
+          updateConnectionDetails({
+            lastHelloSentAt: Date.now(),
+            currentSessionId: snapshot.sessionId,
+            currentDocumentId: snapshot.documentId,
+          });
+          appendDiagnostic("info", `Hello sent for ${snapshot.sessionId}.`);
           sendEvent("bridge_status", {
             status: "connected",
             serverUrl,
             sessionId: snapshot.sessionId,
-          });
-          publishStatus({
-            phase: "connected",
-            isConnected: true,
-            hasConnected: true,
-            lastError: null,
           });
           appendDiagnostic(
             "info",
@@ -845,6 +1058,7 @@ export function startOfficeBridge(
           );
         })
         .catch((error) => {
+          if (state.socket !== socket || state.stopped) return;
           const message =
             error instanceof Error && error.message.trim()
               ? error.message
@@ -863,16 +1077,27 @@ export function startOfficeBridge(
             message: "Failed to build bridge snapshot",
             error: toBridgeError(error),
           });
+          try {
+            socket.close();
+          } catch {
+            publishStatus({
+              phase: "reconnecting",
+              isConnected: false,
+            });
+            scheduleReconnect("hello_snapshot_failed");
+          }
         });
     });
 
     socket.addEventListener("message", (event) => {
+      if (state.socket !== socket || state.stopped) return;
       const message = parseWireMessage(event as MessageEvent<string>);
       if (!message) return;
       handleInvoke(message);
     });
 
     socket.addEventListener("close", (event) => {
+      if (state.socket !== socket) return;
       if (state.socket === socket) {
         state.socket = null;
       }
@@ -901,10 +1126,11 @@ export function startOfficeBridge(
         phase: "reconnecting",
         isConnected: false,
       });
-      scheduleReconnect();
+      scheduleReconnect("socket_closed");
     });
 
     socket.addEventListener("error", () => {
+      if (state.socket !== socket || state.stopped) return;
       appendDiagnostic(
         "error",
         `WebSocket error while connecting to ${serverUrl}.`,
@@ -948,10 +1174,12 @@ export function startOfficeBridge(
     };
 
     const handleFocus = () => {
-      refresh().catch(() => undefined);
+      appendDiagnostic("info", "Taskpane focus refresh started.");
+      refresh("window_focus").catch(() => undefined);
     };
 
     const handleBeforeUnload = () => {
+      appendDiagnostic("warn", "Detected stale page reload; notifying bridge before unload.");
       sendEvent("session:hmr_reload", {
         previousSessionId: state.snapshot?.sessionId,
       });
@@ -1023,14 +1251,38 @@ export function startOfficeBridge(
     instanceId,
     refresh: async () => {
       if (!enabled || state.stopped) return null;
-      return refresh();
+      return refresh("controller.refresh");
+    },
+    reconnect: async () => {
+      if (!enabled) return null;
+      clearReconnectTimer();
+      updateConnectionDetails({
+        lastReconnectAt: Date.now(),
+      });
+      resetSessionState("controller.reconnect");
+      if (state.socket) {
+        const activeSocket = state.socket;
+        state.socket = null;
+        try {
+          activeSocket.close();
+        } catch {
+          // Ignore close failures during forced reconnect.
+        }
+      }
+      state.stopped = false;
+      publishStatus({
+        phase: "connecting",
+        isConnected: false,
+      });
+      connect().catch(() => undefined);
+      return null;
     },
     emitEvent: <K extends BridgeEventName>(
       event: K,
       payload: BridgeEventPayloads[K],
     ) => {
       if (!enabled || state.stopped) return;
-      sendEvent(event, payload);
+      bridgeEventSink(event, serializeForJson(payload) as Record<string, unknown>);
     },
     getStatus: () => cloneStatus(state.status),
     subscribe: (listener) => {

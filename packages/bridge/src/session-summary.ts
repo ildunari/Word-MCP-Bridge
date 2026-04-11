@@ -2,6 +2,10 @@ import type {
   BridgeRuntimeStateSlice,
   BridgeSessionSnapshot,
 } from "./protocol";
+import {
+  getSessionDocumentLabel,
+  getSessionDocumentSummary,
+} from "./session-labels.js";
 
 function truncate(text: string, max = 96): string {
   const trimmed = text.trim();
@@ -12,8 +16,8 @@ function truncate(text: string, max = 96): string {
 function buildTargetIdentity(snapshot: BridgeSessionSnapshot): string[] {
   const appLabel = snapshot.appName?.trim() || snapshot.app;
   const parts = [
-    appLabel,
-    `doc:${snapshot.documentId}`,
+    getSessionDocumentLabel(snapshot),
+    `${appLabel.toLowerCase()}:${getSessionDocumentSummary(snapshot)}`,
     `session:${snapshot.sessionId}`,
   ];
   if (snapshot.host?.href) {

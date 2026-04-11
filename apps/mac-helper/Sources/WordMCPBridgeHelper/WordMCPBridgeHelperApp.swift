@@ -27,7 +27,7 @@ struct WordMCPBridgeHelperApp: App {
     }
 
     private var menuBarSymbol: String {
-        if controller.isStarting || controller.isStopping || controller.isLoading || controller.isWordAddinStarting {
+        if controller.isStarting || controller.isStopping || controller.isTaskpaneServerStarting || controller.isWordAddinStarting {
             return "arrow.triangle.2.circlepath.circle"
         }
         return controller.isBridgeRunning ? "wave.3.right.circle.fill" : "wave.3.right.circle"
@@ -58,7 +58,7 @@ private struct HelperMenuView: View {
     @AppStorage(HelperPreferences.hasCompletedOnboardingKey) private var hasCompletedOnboarding = false
     @AppStorage(HelperPreferences.dismissSetupBannerKey) private var dismissSetupBanner = false
     @State private var selectedSection: HelperPanelSection = .overview
-    @State private var installFlow: HelperInstallFlow = .hosted
+    @State private var installFlow: HelperInstallFlow = .production
     @State private var didCopyConfig = false
     @State private var showsAdvancedActions = false
 
@@ -147,6 +147,11 @@ private struct HelperMenuView: View {
 
             HStack(spacing: 8) {
                 statusBadge(
+                    taskpaneStatusLabel,
+                    systemImage: taskpaneStatusIcon,
+                    color: controller.setupState.taskpaneServerReachable ? .green : .secondary
+                )
+                statusBadge(
                     bridgeStatusLabel,
                     systemImage: bridgeStatusIcon,
                     color: controller.setupState.bridgeReachable ? .green : .secondary
@@ -174,6 +179,9 @@ private struct HelperMenuView: View {
 
             if let lastError = controller.lastError {
                 errorLine(lastError)
+            }
+            if let taskpaneErr = controller.taskpaneServerLastError {
+                errorLine(taskpaneErr)
             }
             if let wordErr = controller.wordAddinLastError {
                 errorLine(wordErr)
@@ -257,7 +265,8 @@ private struct HelperMenuView: View {
             }
 
             compactSection("Readiness") {
-                readinessLine("Hosted assets", ready: controller.setupState.assetAvailability.hasHostedManifest)
+                readinessLine("Production manifest ready", ready: controller.setupState.assetAvailability.hasProductionManifest)
+                readinessLine("Local panel server ready", ready: controller.setupState.taskpaneServerReachable)
                 readinessLine("Bridge reachable", ready: controller.setupState.bridgeReachable)
                 readinessLine("Word taskpane connected", ready: controller.setupState.hasWordSession)
             }
@@ -266,11 +275,11 @@ private struct HelperMenuView: View {
                 if let sessions = controller.snapshot?.status.sessions, !sessions.isEmpty {
                     ForEach(sessions.prefix(2)) { session in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(session.metadata?.title ?? session.metadata?.documentId ?? session.sessionId)
+                            Text(session.documentLabel)
                                 .font(.caption.weight(.medium))
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Text("\(session.app) • \(session.metrics.toolCallCount) tool calls")
+                            Text("\(session.app) • \(session.documentSummary) • \(session.metrics.toolCallCount) tool calls")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -304,11 +313,18 @@ private struct HelperMenuView: View {
         VStack(alignment: .leading, spacing: 10) {
             compactSection("Setup checklist") {
                 readinessLine(
-                    "Hosted install assets available",
-                    ready: controller.setupState.assetAvailability.hasHostedManifest,
-                    summary: controller.setupState.assetAvailability.hasHostedManifest
-                        ? "The helper can reveal the hosted manifest."
-                        : "The hosted manifest is missing from the app bundle or repo."
+                    "Production manifest available",
+                    ready: controller.setupState.assetAvailability.hasProductionManifest,
+                    summary: controller.setupState.assetAvailability.hasProductionManifest
+                        ? "The helper can reveal the local production manifest."
+                        : "The local production manifest is missing from the app bundle or repo."
+                )
+                readinessLine(
+                    "Local taskpane server running",
+                    ready: controller.setupState.taskpaneServerReachable,
+                    summary: controller.setupState.taskpaneServerReachable
+                        ? "Word can load the taskpane from this Mac."
+                        : "Keep the helper open so it can serve the local taskpane before Word opens the panel."
                 )
                 readinessLine(
                     "Bridge running",
@@ -339,17 +355,17 @@ private struct HelperMenuView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if installFlow == .hosted {
+                if installFlow == .production {
                     actionPair(
-                        primaryTitle: "Reveal Hosted Manifest",
-                        primaryAction: controller.openHostedManifest,
+                        primaryTitle: "Reveal Production Manifest",
+                        primaryAction: controller.openProductionManifest,
                         secondaryTitle: "Open Word",
                         secondaryAction: controller.openWord
                     )
                 } else {
                     actionPair(
-                        primaryTitle: "Reveal Local Manifest",
-                        primaryAction: controller.openLocalManifest,
+                        primaryTitle: "Reveal Dev Manifest",
+                        primaryAction: controller.openDevelopmentManifest,
                         secondaryTitle: "Open Word",
                         secondaryAction: controller.openWord
                     )
@@ -374,7 +390,7 @@ private struct HelperMenuView: View {
                     }
                     .buttonStyle(.bordered)
                 } else {
-                    Text("Mark setup complete once the bridge is reachable and the Word taskpane is connected.")
+                    Text("Mark setup complete once the local panel server, the bridge, and the Word taskpane are all connected.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -403,8 +419,8 @@ private struct HelperMenuView: View {
 
             compactSection("Resources") {
                 actionPair(
-                    primaryTitle: "Hosted Manifest",
-                    primaryAction: controller.openHostedManifest,
+                    primaryTitle: "Production Manifest",
+                    primaryAction: controller.openProductionManifest,
                     secondaryTitle: "Add-in Folder",
                     secondaryAction: controller.openManifestFolder
                 )
@@ -436,8 +452,8 @@ private struct HelperMenuView: View {
                                 secondaryDisabled: !controller.isWordAddinDevRunning
                             )
                             actionPair(
-                                primaryTitle: "Local Manifest",
-                                primaryAction: controller.openLocalManifest,
+                                primaryTitle: "Dev Manifest",
+                                primaryAction: controller.openDevelopmentManifest,
                                 secondaryTitle: "Add-in Folder",
                                 secondaryAction: controller.openManifestFolder
                             )
@@ -659,6 +675,29 @@ private struct HelperMenuView: View {
         return "Bridge offline"
     }
 
+    private var taskpaneStatusLabel: String {
+        if controller.setupState.taskpaneServerReachable {
+            return "Local panel ready"
+        }
+        if controller.setupState.taskpaneServerStarting {
+            return "Starting local panel"
+        }
+        if controller.setupState.taskpaneServerProcessRunning {
+            return "Local panel starting"
+        }
+        return "Local panel offline"
+    }
+
+    private var taskpaneStatusIcon: String {
+        if controller.setupState.taskpaneServerReachable {
+            return "rectangle.connected.to.line.below"
+        }
+        if controller.setupState.taskpaneServerStarting || controller.setupState.taskpaneServerProcessRunning {
+            return "arrow.triangle.2.circlepath"
+        }
+        return "rectangle.slash"
+    }
+
     private var bridgeStatusIcon: String {
         if controller.setupState.bridgeReachable {
             return "checkmark.circle.fill"
@@ -700,6 +739,9 @@ private struct HelperMenuView: View {
     }
 
     private var noSessionSummary: String {
+        if !controller.setupState.taskpaneServerReachable {
+            return "Keep the helper open so Word can load the local taskpane before connecting to the bridge."
+        }
         if !controller.setupState.bridgeReachable {
             return "Start the bridge first, then open Word and the taskpane."
         }

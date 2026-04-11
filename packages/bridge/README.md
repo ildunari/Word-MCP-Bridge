@@ -62,7 +62,7 @@ The MCP server is only useful when:
 - the Word add-in taskpane is open
 - the taskpane is connected to the bridge
 
-If you are using the packaged helper app, the helper can now guide the first-run setup and reveal the hosted manifest for the one-time Word install step.
+If you are using the packaged helper app, the helper can now guide the first-run setup and reveal the local production manifest for the one-time Word install step.
 
 ## Common CLI commands
 

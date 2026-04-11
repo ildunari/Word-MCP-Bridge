@@ -5,7 +5,7 @@
 This repo is intentionally smaller than `office-agents-hybrid`. It contains:
 
 - `packages/bridge`: standalone HTTPS/WebSocket bridge server, CLI, and stdio MCP server
-- `packages/word-addin`: minimal Word taskpane add-in that exposes bridge status, document metadata, live selection context, and capabilities
+- `packages/word-addin`: minimal Word taskpane add-in that shows the live document dashboard, selection context, and review-ready details for the current Word file
 - `apps/mac-helper`: native SwiftUI menu bar helper for bridge lifecycle, counters, and quick actions
 - `scripts/`: packaging helpers for the Word add-in bundle
 
@@ -16,13 +16,13 @@ The full chat side panel and old SDK/core runtime stack are intentionally out of
 - Bridge server: `office-bridge serve`
 - MCP server: `office-bridge mcp-serve`
 - CLI inspection: `office-bridge list`, `summary`, `snapshot`, `events`, `watch-selection`
-- Word add-in: local manifest and hosted manifest
+- Word add-in: local production manifest and local development manifest
 
 ## Best user flow
 
 The intended user flow is:
 
-1. Install the Word add-in once with the hosted manifest.
+1. Install the Word add-in once with the local production manifest.
 2. Put `Word MCP Bridge Helper.app` in `/Applications`.
 3. Optionally enable `Launch helper at login` in the helper settings.
 4. For normal use, open the helper, open Word, and open the `Word MCP Bridge` taskpane.
@@ -30,7 +30,7 @@ The intended user flow is:
 The helper app now includes:
 
 - a first-run setup window
-- a hosted-first install path
+- a local-first install path
 - quick actions for Word, manifests, docs, and MCP config
 - optional bridge health notifications
 - startup preferences for launch-at-login and auto-start bridge
@@ -55,18 +55,18 @@ Copy the helper app into `/Applications` and open it.
 
 ### 2. Install the Word add-in once
 
-Use the helper app's `Getting Started` flow and choose the hosted install path.
+Use the helper app's `Getting Started` flow and choose the local production install path.
 
 That flow will:
 
-- reveal the hosted manifest
+- reveal the local production manifest
 - open Word
 - tell you the exact next step inside Word
 - let you verify when the taskpane has connected back to the bridge
 
 If you want to do it manually, use:
 
-- hosted manifest: `packages/word-addin/manifest.prod.xml`
+- local production manifest: `packages/word-addin/manifest.prod.xml`
 - local dev manifest: `packages/word-addin/manifest.xml`
 
 ## Daily workflow
@@ -105,21 +105,14 @@ pnpm bridge:mcp
 pnpm helper:run
 ```
 
-## Hosted add-in mode
+## Local production mode
 
-Use this mode when the add-in UI is already hosted and you mainly want to run the local bridge and MCP server on the user machine.
+Use this mode for normal users. The helper app serves the taskpane UI locally on the user machine, and the taskpane connects to the local bridge on `https://localhost:4017`.
 
-1. Deploy `packages/word-addin/dist` to your static host.
+1. Package the helper app and add-in assets.
 2. Use `packages/word-addin/manifest.prod.xml` as the production manifest.
 3. Install that manifest in Word once.
-4. Have each user run the local bridge server on their machine:
-
-```bash
-office-bridge serve
-office-bridge mcp-serve
-```
-
-The hosted taskpane still connects back to the local bridge on `https://localhost:4017`.
+4. Keep `Word MCP Bridge Helper.app` running while using the taskpane.
 
 ## MCP host setup
 
@@ -153,7 +146,7 @@ pnpm helper:run
 pnpm package:helper
 ```
 
-The packaged `.app` can use bundled setup assets for hosted installation. When running from the repo, it can still fall back to repo-local manifests and docs.
+The packaged `.app` uses bundled setup assets and bundled taskpane files for local production use. When running from the repo, it can still fall back to repo-local manifests and docs.
 
 ## Repo-local skills
 

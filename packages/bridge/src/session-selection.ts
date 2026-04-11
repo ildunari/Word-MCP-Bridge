@@ -1,4 +1,5 @@
 import type { BridgeSessionRecord } from "./server.js";
+import { describeSessionChoice } from "./session-labels.js";
 
 export function pickUniqueWaitSession(
   matches: BridgeSessionRecord[],
@@ -11,6 +12,6 @@ export function pickUniqueWaitSession(
     ? `Session selector "${selector}" is ambiguous`
     : "Multiple sessions match the current filters";
   throw new Error(
-    `${label}: ${matches.map((session) => session.snapshot.sessionId).join(", ")}`,
+    `${label}: ${matches.map((session) => describeSessionChoice(session.snapshot)).join(", ")}`,
   );
 }

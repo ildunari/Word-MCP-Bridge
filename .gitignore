@@ -11,3 +11,5 @@ apps/mac-helper/.build
 apps/mac-helper/.swiftpm
 apps/mac-helper/AppIcon.iconset
 apps/mac-helper/WordMCPBridgeHelper.icns
+docs/~$*.docx
+scripts/bridge/artifacts/
