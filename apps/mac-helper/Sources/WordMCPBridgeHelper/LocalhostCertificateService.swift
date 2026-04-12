@@ -31,11 +31,14 @@ enum LocalhostCertificateService {
 
     static func ensureReady(
         fileManager: FileManager = .default,
-        homeDirectory: URL? = nil
+        homeDirectory: URL? = nil,
+        trustCertificateHandler: ((URL, URL?) throws -> Void)? = nil
     ) throws -> (certURL: URL, keyURL: URL) {
         let helperURLs = helperCertificateURLs(fileManager: fileManager, homeDirectory: homeDirectory)
+        let trustHandler = trustCertificateHandler ?? trustCertificate
         if fileManager.fileExists(atPath: filesystemPath(for: helperURLs.certificateURL)),
            fileManager.fileExists(atPath: filesystemPath(for: helperURLs.keyURL)) {
+            try trustHandler(helperURLs.certificateURL, homeDirectory)
             return (helperURLs.certificateURL, helperURLs.keyURL)
         }
 
@@ -48,7 +51,7 @@ enum LocalhostCertificateService {
         if fileManager.fileExists(atPath: filesystemPath(for: legacyURLs.certURL)),
            fileManager.fileExists(atPath: filesystemPath(for: legacyURLs.keyURL)) {
             try copyLegacyCertificate(legacyURLs: legacyURLs, helperURLs: helperURLs, fileManager: fileManager)
-            try trustCertificate(at: helperURLs.certificateURL, homeDirectory: homeDirectory)
+            try trustHandler(helperURLs.certificateURL, homeDirectory)
             return (helperURLs.certificateURL, helperURLs.keyURL)
         }
 
@@ -78,7 +81,7 @@ enum LocalhostCertificateService {
                 "v3_req",
             ]
         )
-        try trustCertificate(at: helperURLs.certificateURL, homeDirectory: homeDirectory)
+        try trustHandler(helperURLs.certificateURL, homeDirectory)
         return (helperURLs.certificateURL, helperURLs.keyURL)
     }
 

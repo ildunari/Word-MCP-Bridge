@@ -1300,6 +1300,8 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     private func launchTaskpane(timeoutSeconds: Int = 20) async throws {
+        let baselineWordSessions = snapshot?.status.sessions.filter { $0.snapshot.app == "word" } ?? []
+        let launchStartedAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
         guard let launchSpec = Self.makeTaskpaneLauncherSpec(
             resourcesRoot: Bundle.main.resourceURL,
             repoRoot: resolveRepoRoot(),
@@ -1335,15 +1337,31 @@ final class BridgeController: NSObject, ObservableObject {
             )
         }
 
-        try await waitForWordSession(timeoutSeconds: Double(timeoutSeconds))
+        try await waitForWordSession(
+            baselineWordSessions: baselineWordSessions,
+            launchStartedAtMs: launchStartedAtMs,
+            launcherOutput: output.text,
+            timeoutSeconds: Double(timeoutSeconds)
+        )
         await refresh(showLoading: false)
     }
 
-    private func waitForWordSession(timeoutSeconds: TimeInterval = 12) async throws {
+    private func waitForWordSession(
+        baselineWordSessions: [BridgeSessionPayload],
+        launchStartedAtMs: Int64,
+        launcherOutput: String,
+        timeoutSeconds: TimeInterval = 12
+    ) async throws {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             await refresh(showLoading: false)
-            if snapshot?.status.sessions.contains(where: { $0.snapshot.app == "word" }) == true {
+            if let sessions = snapshot?.status.sessions,
+               Self.didLaunchWordSessionSuccessfully(
+                   baselineWordSessions: baselineWordSessions,
+                   currentSessions: sessions,
+                   launchStartedAtMs: launchStartedAtMs,
+                   launcherOutput: launcherOutput
+               ) {
                 return
             }
             try await Task.sleep(for: .milliseconds(500))
@@ -1353,6 +1371,34 @@ final class BridgeController: NSObject, ObservableObject {
             code: 28,
             userInfo: [NSLocalizedDescriptionKey: "The helper opened Word, but no live Word taskpane session appeared in time."]
         )
+    }
+
+    nonisolated static func didLaunchWordSessionSuccessfully(
+        baselineWordSessions: [BridgeSessionPayload],
+        currentSessions: [BridgeSessionPayload],
+        launchStartedAtMs: Int64,
+        launcherOutput: String
+    ) -> Bool {
+        let currentWordSessions = currentSessions.filter { $0.snapshot.app == "word" }
+        guard !currentWordSessions.isEmpty else { return false }
+
+        if currentWordSessions.contains(where: { $0.connectedAt >= launchStartedAtMs || $0.lastSeenAt >= launchStartedAtMs }) {
+            return true
+        }
+
+        let baselineIDs = Set(baselineWordSessions.map(\.sessionId))
+        let currentIDs = Set(currentWordSessions.map(\.sessionId))
+        if !currentIDs.subtracting(baselineIDs).isEmpty {
+            return true
+        }
+
+        if launcherOutput.localizedCaseInsensitiveContains("already open"),
+           !baselineIDs.isEmpty,
+           baselineIDs.isSubset(of: currentIDs) {
+            return true
+        }
+
+        return false
     }
 
     private func runProcess(

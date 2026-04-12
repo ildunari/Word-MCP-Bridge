@@ -61,6 +61,35 @@ final class LocalhostCertificateServiceTests: XCTestCase {
         XCTAssertTrue(urls.opensslConfigURL.lastPathComponent == "openssl-localhost.cnf")
     }
 
+    func testEnsureReadyRetriesTrustWhenHelperCertificateAlreadyExists() throws {
+        let tempHome = makeTempHome()
+        let fileManager = FileManager.default
+        let helperURLs = LocalhostCertificateService.helperCertificateURLs(
+            fileManager: fileManager,
+            homeDirectory: tempHome
+        )
+        try fileManager.createDirectory(
+            at: helperURLs.certificateURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("helper-cert".utf8).write(to: helperURLs.certificateURL)
+        try Data("helper-key".utf8).write(to: helperURLs.keyURL)
+
+        var trustCallCount = 0
+        let resolved = try LocalhostCertificateService.ensureReady(
+            fileManager: fileManager,
+            homeDirectory: tempHome,
+            trustCertificateHandler: { certURL, _ in
+                trustCallCount += 1
+                XCTAssertEqual(certURL.path(), helperURLs.certificateURL.path())
+            }
+        )
+
+        XCTAssertEqual(trustCallCount, 1)
+        XCTAssertEqual(resolved.certURL.path(), helperURLs.certificateURL.path())
+        XCTAssertEqual(resolved.keyURL.path(), helperURLs.keyURL.path())
+    }
+
     private func makeTempHome() -> URL {
         let homeDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

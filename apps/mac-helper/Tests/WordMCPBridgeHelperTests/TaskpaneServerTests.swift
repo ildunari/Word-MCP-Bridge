@@ -101,6 +101,51 @@ final class TaskpaneServerTests: XCTestCase {
         XCTAssertEqual(spec?.currentDirectoryURL, resourcesRoot)
     }
 
+    func testWordSessionLaunchProgressRejectsUnchangedExistingSession() {
+        let baseline = [makeWordSession(sessionId: "word:existing", connectedAt: 1_000, lastSeenAt: 2_000)]
+        let current = [makeWordSession(sessionId: "word:existing", connectedAt: 1_000, lastSeenAt: 2_000)]
+
+        let didSucceed = BridgeController.didLaunchWordSessionSuccessfully(
+            baselineWordSessions: baseline,
+            currentSessions: current,
+            launchStartedAtMs: 3_000,
+            launcherOutput: "Triggered the Word MCP Bridge ribbon command."
+        )
+
+        XCTAssertFalse(didSucceed)
+    }
+
+    func testWordSessionLaunchProgressAcceptsNewSessionId() {
+        let baseline = [makeWordSession(sessionId: "word:existing", connectedAt: 1_000, lastSeenAt: 2_000)]
+        let current = [
+            makeWordSession(sessionId: "word:existing", connectedAt: 1_000, lastSeenAt: 2_000),
+            makeWordSession(sessionId: "word:new", connectedAt: 4_000, lastSeenAt: 4_000),
+        ]
+
+        let didSucceed = BridgeController.didLaunchWordSessionSuccessfully(
+            baselineWordSessions: baseline,
+            currentSessions: current,
+            launchStartedAtMs: 3_000,
+            launcherOutput: "Triggered the Word MCP Bridge ribbon command."
+        )
+
+        XCTAssertTrue(didSucceed)
+    }
+
+    func testWordSessionLaunchProgressAllowsAlreadyOpenPaneWithoutNewSession() {
+        let baseline = [makeWordSession(sessionId: "word:existing", connectedAt: 1_000, lastSeenAt: 2_000)]
+        let current = [makeWordSession(sessionId: "word:existing", connectedAt: 1_000, lastSeenAt: 2_000)]
+
+        let didSucceed = BridgeController.didLaunchWordSessionSuccessfully(
+            baselineWordSessions: baseline,
+            currentSessions: current,
+            launchStartedAtMs: 3_000,
+            launcherOutput: "Word MCP Bridge pane is already open."
+        )
+
+        XCTAssertTrue(didSucceed)
+    }
+
     func testBridgeAutoStartDefaultsToEnabledAndRetriesWhenBridgeIsDown() {
         let shouldAutoStart = BridgeController.shouldAutoStartBridge(
             autoStartPreferenceValue: nil,
@@ -272,5 +317,33 @@ final class TaskpaneServerTests: XCTestCase {
         )
 
         XCTAssertFalse(shouldAutoOpen)
+    }
+
+    private func makeWordSession(sessionId: String, connectedAt: Int64, lastSeenAt: Int64) -> BridgeSessionPayload {
+        BridgeSessionPayload(
+            snapshot: BridgeSessionSnapshotPayload(
+                sessionId: sessionId,
+                instanceId: nil,
+                app: "word",
+                appName: "Microsoft Word",
+                documentId: "word-local:\(sessionId)",
+                documentMetadata: BridgeMetadataPayload(documentId: nil, title: "Doc", url: nil),
+                runtimeState: nil,
+                gateway: nil
+            ),
+            connectedAt: connectedAt,
+            lastSeenAt: lastSeenAt,
+            pendingCount: 0,
+            metrics: BridgeMetricsPayload(
+                eventCount: 0,
+                toolCallCount: 0,
+                bridgeErrorCount: 0,
+                requestTimeoutCount: 0,
+                connectionDropCount: 0,
+                disconnectedSessionCount: nil,
+                connectedSessionCount: nil,
+                pendingCount: nil
+            )
+        )
     }
 }
