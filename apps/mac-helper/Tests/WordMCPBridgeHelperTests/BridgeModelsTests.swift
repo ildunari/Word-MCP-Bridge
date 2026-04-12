@@ -2,6 +2,16 @@ import XCTest
 @testable import WordMCPBridgeHelper
 
 final class BridgeModelsTests: XCTestCase {
+    private let readyRuntime = HelperRuntimeAvailability(
+        bundledBridgeExecutableURL: URL(fileURLWithPath: "/tmp/office-bridge"),
+        bundledTaskpaneServerScriptURL: URL(fileURLWithPath: "/tmp/serve_taskpane.mjs"),
+        bundledTaskpaneLauncherURL: URL(fileURLWithPath: "/tmp/word-launcher"),
+        bundledNodeURL: URL(fileURLWithPath: "/tmp/node"),
+        certificateURL: URL(fileURLWithPath: "/tmp/localhost.crt"),
+        keyURL: URL(fileURLWithPath: "/tmp/localhost.key"),
+        accessibilityTrusted: true
+    )
+
     func testDecodesCurrentBridgeStatusPayloadShape() throws {
         let json = """
         {
@@ -81,11 +91,80 @@ final class BridgeModelsTests: XCTestCase {
                 productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
                 developmentManifestURL: nil,
                 setupGuideURL: nil
-            )
+            ),
+            runtimeAvailability: readyRuntime
         )
 
         XCTAssertEqual(state.currentStepLabel, "Starting the bridge")
         XCTAssertEqual(state.currentStepSummary, "The helper launched the local bridge and is waiting for it to become reachable.")
+    }
+
+    func testSetupStateCallsOutCertificateBeforeInstallReadiness() {
+        let state = HelperSetupState(
+            wordInstallStatus: .installedCurrentForTests,
+            taskpaneServerReachable: false,
+            taskpaneServerProcessRunning: false,
+            taskpaneServerStarting: false,
+            bridgeReachable: false,
+            bridgeProcessRunning: false,
+            bridgeStarting: false,
+            wordAppRunning: false,
+            connectedSessionCount: 0,
+            assetAvailability: .init(
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
+                setupGuideURL: nil
+            ),
+            runtimeAvailability: .init(
+                bundledBridgeExecutableURL: URL(fileURLWithPath: "/tmp/bridge"),
+                bundledTaskpaneServerScriptURL: URL(fileURLWithPath: "/tmp/serve_taskpane.mjs"),
+                bundledTaskpaneLauncherURL: URL(fileURLWithPath: "/tmp/word-launcher"),
+                bundledNodeURL: URL(fileURLWithPath: "/tmp/node"),
+                certificateURL: nil,
+                keyURL: nil,
+                accessibilityTrusted: true
+            )
+        )
+
+        XCTAssertEqual(state.currentStepLabel, "Prepare certificate")
+        XCTAssertEqual(
+            state.whyNotReadyExplanation,
+            "The helper still needs to prepare and trust its localhost HTTPS certificate before Word can load the taskpane."
+        )
+    }
+
+    func testSetupStateCallsOutAccessibilityBeforeOpeningTaskpane() {
+        let state = HelperSetupState(
+            wordInstallStatus: .installedCurrentForTests,
+            taskpaneServerReachable: true,
+            taskpaneServerProcessRunning: true,
+            taskpaneServerStarting: false,
+            bridgeReachable: true,
+            bridgeProcessRunning: true,
+            bridgeStarting: false,
+            wordAppRunning: true,
+            connectedSessionCount: 0,
+            assetAvailability: .init(
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
+                setupGuideURL: nil
+            ),
+            runtimeAvailability: .init(
+                bundledBridgeExecutableURL: URL(fileURLWithPath: "/tmp/bridge"),
+                bundledTaskpaneServerScriptURL: URL(fileURLWithPath: "/tmp/serve_taskpane.mjs"),
+                bundledTaskpaneLauncherURL: URL(fileURLWithPath: "/tmp/word-launcher"),
+                bundledNodeURL: URL(fileURLWithPath: "/tmp/node"),
+                certificateURL: URL(fileURLWithPath: "/tmp/localhost.crt"),
+                keyURL: URL(fileURLWithPath: "/tmp/localhost.key"),
+                accessibilityTrusted: false
+            )
+        )
+
+        XCTAssertEqual(state.currentStepLabel, "Allow Accessibility")
+        XCTAssertEqual(
+            state.currentStepSummary,
+            "Grant macOS Accessibility permission so the helper can reopen the Word MCP Bridge taskpane for you."
+        )
     }
 
     func testSetupStateCallsForWordInstallBeforeAnythingElse() {
@@ -111,7 +190,8 @@ final class BridgeModelsTests: XCTestCase {
                 productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
                 developmentManifestURL: nil,
                 setupGuideURL: nil
-            )
+            ),
+            runtimeAvailability: readyRuntime
         )
 
         XCTAssertEqual(state.currentStepLabel, "Install in Word")
@@ -133,7 +213,8 @@ final class BridgeModelsTests: XCTestCase {
                 productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
                 developmentManifestURL: nil,
                 setupGuideURL: nil
-            )
+            ),
+            runtimeAvailability: readyRuntime
         )
 
         XCTAssertEqual(state.currentStepLabel, "Open Word")
@@ -155,7 +236,8 @@ final class BridgeModelsTests: XCTestCase {
                 productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
                 developmentManifestURL: nil,
                 setupGuideURL: nil
-            )
+            ),
+            runtimeAvailability: readyRuntime
         )
 
         XCTAssertEqual(state.currentStepLabel, "Open the taskpane")
@@ -177,7 +259,8 @@ final class BridgeModelsTests: XCTestCase {
                 productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
                 developmentManifestURL: nil,
                 setupGuideURL: nil
-            )
+            ),
+            runtimeAvailability: readyRuntime
         )
 
         XCTAssertEqual(state.currentStepLabel, "Ready to use")
@@ -202,7 +285,8 @@ final class BridgeModelsTests: XCTestCase {
                 productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
                 developmentManifestURL: nil,
                 setupGuideURL: nil
-            )
+            ),
+            runtimeAvailability: readyRuntime
         )
 
         XCTAssertEqual(state.currentStepLabel, "Start the helper")

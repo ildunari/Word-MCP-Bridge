@@ -63,7 +63,7 @@ The MCP server is only useful when:
 
 The visible taskpane does not have to stay open once the shared runtime is attached, but the open-pane state may still need to be restored after Word restarts or document windows are reopened.
 
-If you are using the packaged helper app, the helper can now guide the first-run setup and reveal the local production manifest for the one-time Word install step.
+If you are using the packaged helper app, the helper now owns the normal-user flow: it installs the production manifest, prepares the localhost certificate, starts the bundled bridge runtime, and can copy the exact packaged MCP config block for your host.
 
 ## Common CLI commands
 
@@ -94,6 +94,8 @@ pnpm bridge:smoke
 ## MCP host setup
 
 The examples below assume the bridge server is already running locally at `https://localhost:4017`.
+
+If you are using `Word MCP Bridge Helper.app`, prefer its `Copy MCP Config` action. That emits the packaged command path inside the app bundle, which is the simplest normal-user setup on a Mac that does not have a repo checkout or global `office-bridge` install.
 
 ### Claude Desktop
 

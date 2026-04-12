@@ -273,6 +273,8 @@ private struct HelperMenuView: View {
 
             compactSection("Readiness") {
                 readinessLine("Word install ready", ready: controller.setupState.installReady)
+                readinessLine("Local certificate ready", ready: controller.setupState.runtimeAvailability.hasLocalhostCertificate)
+                readinessLine("Taskpane automation ready", ready: controller.setupState.runtimeAvailability.accessibilityTrusted)
                 readinessLine("Local panel server ready", ready: controller.setupState.taskpaneServerReachable)
                 readinessLine("Bridge reachable", ready: controller.setupState.bridgeReachable)
                 readinessLine("Word taskpane connected", ready: controller.setupState.hasWordSession)
@@ -334,6 +336,20 @@ private struct HelperMenuView: View {
                         : "The local production manifest is missing from the app bundle or repo."
                 )
                 readinessLine(
+                    "Localhost certificate ready",
+                    ready: controller.setupState.runtimeAvailability.hasLocalhostCertificate,
+                    summary: controller.setupState.runtimeAvailability.hasLocalhostCertificate
+                        ? "The helper has a localhost certificate ready for the packaged taskpane."
+                        : "Prepare the helper-owned localhost certificate before Word loads the side panel."
+                )
+                readinessLine(
+                    "Taskpane automation ready",
+                    ready: controller.setupState.runtimeAvailability.accessibilityTrusted,
+                    summary: controller.setupState.runtimeAvailability.accessibilityTrusted
+                        ? "macOS Accessibility is available for reopening the taskpane."
+                        : "Grant Accessibility permission so the helper can reopen the taskpane for you."
+                )
+                readinessLine(
                     "Word install ready",
                     ready: controller.setupState.installReady,
                     summary: controller.setupState.wordInstallStatus.statusSummary
@@ -383,6 +399,16 @@ private struct HelperMenuView: View {
                     primaryDisabled: controller.isInstallingWordAddin,
                     secondaryDisabled: controller.isInstallingWordAddin
                 )
+                if controller.setupState.wordInstallStatus.requiresWordRestart {
+                    actionPair(
+                        primaryTitle: "Restart Word Now",
+                        primaryAction: controller.restartWordNow,
+                        secondaryTitle: "Open Word MCP Bridge",
+                        secondaryAction: controller.openWordMcpBridge,
+                        primaryDisabled: false,
+                        secondaryDisabled: controller.isOpeningWordTaskpane
+                    )
+                }
                 actionPair(
                     primaryTitle: "Open Word",
                     primaryAction: controller.openWord,
@@ -444,6 +470,14 @@ private struct HelperMenuView: View {
                     primaryDisabled: controller.isInstallingWordAddin,
                     secondaryDisabled: controller.isInstallingWordAddin
                 )
+                if controller.setupState.wordInstallStatus.requiresWordRestart {
+                    actionPair(
+                        primaryTitle: "Restart Word Now",
+                        primaryAction: controller.restartWordNow,
+                        secondaryTitle: "Open Word MCP Bridge",
+                        secondaryAction: controller.openWordMcpBridge
+                    )
+                }
             }
 
             compactSection("Resources") {

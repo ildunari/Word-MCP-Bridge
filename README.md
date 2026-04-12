@@ -33,6 +33,7 @@ The helper app now includes:
 
 - a first-run setup window plus persistent install and repair actions
 - a helper-owned local production install path
+- a bundled bridge runtime, packaged MCP wrapper, and local panel server runtime
 - quick actions for Word, manifests, docs, and MCP config
 - optional bridge health notifications
 - startup preferences for launch-at-login, auto-start bridge, and auto-open taskpane recovery
@@ -52,6 +53,7 @@ That produces:
 - `release/word-addin-bundle/`
 - `release/word-addin-bundle.zip`
 - `release/mac-helper/Word MCP Bridge Helper.app`
+- `release/mac-helper/Word-MCP-Bridge-Helper.zip`
 
 Copy the helper app into `/Applications` and open it.
 
@@ -62,9 +64,10 @@ Use the helper app's `Install in Word` action.
 That flow will:
 
 - install or refresh the bundled local production manifest in Word's sideload folder
-- start the local taskpane server and bridge if needed
+- prepare the helper-owned localhost certificate if needed
+- start the bundled local taskpane server and bundled bridge runtime if needed
 - open Word when needed
-- guide you to restart Word only if the manifest changed while Word was already open
+- guide you to use `Restart Word Now` only if the manifest changed while Word was already open
 - let you reopen the `Word MCP Bridge` taskpane from the helper
 
 If you want to do it manually, use:
@@ -151,12 +154,13 @@ See [`packages/bridge/README.md`](packages/bridge/README.md) for copy-paste setu
 The helper app is now the main setup and operations surface. It can:
 
 - poll `https://localhost:4017/status`
-- start the local bridge with `pnpm bridge:serve`
+- start the local bridge from its bundled runtime
 - stop the local bridge through the bridge shutdown endpoint
 - install or repair the bundled production Word manifest
+- prepare and reuse a helper-owned localhost certificate for both the bridge and local taskpane
 - show live totals for sessions, tool calls, errors, drops, and pending requests
-- open Word, repair the taskpane, and explain what is blocking readiness
-- copy a ready-to-paste MCP config block
+- open Word, restart Word when the manifest changed mid-session, repair the taskpane, and explain what is blocking readiness
+- copy a ready-to-paste MCP config block that points at the packaged bridge runtime inside the app bundle
 - guide first-run installation
 - optionally launch at login, auto-start the bridge, and auto-open the taskpane when Word launches
 - optionally notify when Word disconnects or reconnects
@@ -169,9 +173,15 @@ pnpm helper:run
 pnpm package:helper
 ```
 
-The packaged `.app` uses bundled setup assets and bundled taskpane files for local production use. When running from the repo, it can still fall back to repo-local manifests and docs.
+The packaged `.app` uses bundled setup assets, a bundled bridge runtime, a bundled local panel server, and a compiled Word launcher for local production use. When running from the repo, it can still fall back to repo-local manifests and docs for development.
 
-If you are preparing a signed distribution build, `apps/mac-helper/Scripts/package_app.sh` now supports an optional `WORD_MCP_BRIDGE_CODESIGN_IDENTITY` environment variable so the packaged helper can be signed as part of the bundle step.
+If you are preparing a signed distribution build, `apps/mac-helper/Scripts/package_app.sh` supports:
+
+- `WORD_MCP_BRIDGE_CODESIGN_IDENTITY` for Developer ID signing
+- `WORD_MCP_BRIDGE_NOTARY_PROFILE` for notarization with `notarytool`
+- `WORD_MCP_BRIDGE_APP_VERSION`, `WORD_MCP_BRIDGE_BUILD_NUMBER`, and `WORD_MCP_BRIDGE_BUNDLE_ID` overrides for release metadata
+
+`pnpm release:bundle` now packages the helper, verifies the bundle contents, smoke-tests the packaged runtime, and then runs the bridge `npm pack` validation.
 
 ## Repo-local skills
 

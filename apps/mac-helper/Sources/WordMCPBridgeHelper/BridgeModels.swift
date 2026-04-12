@@ -239,6 +239,42 @@ struct HelperAssetAvailability {
     var hasSetupGuide: Bool { setupGuideURL != nil }
 }
 
+struct HelperRuntimeAvailability {
+    let bundledBridgeExecutableURL: URL?
+    let bundledTaskpaneServerScriptURL: URL?
+    let bundledTaskpaneLauncherURL: URL?
+    let bundledNodeURL: URL?
+    let certificateURL: URL?
+    let keyURL: URL?
+    let accessibilityTrusted: Bool
+
+    static let unavailable = HelperRuntimeAvailability(
+        bundledBridgeExecutableURL: nil,
+        bundledTaskpaneServerScriptURL: nil,
+        bundledTaskpaneLauncherURL: nil,
+        bundledNodeURL: nil,
+        certificateURL: nil,
+        keyURL: nil,
+        accessibilityTrusted: false
+    )
+
+    var hasPackagedBridgeRuntime: Bool {
+        bundledBridgeExecutableURL != nil
+    }
+
+    var hasPackagedTaskpaneServer: Bool {
+        bundledTaskpaneServerScriptURL != nil && bundledNodeURL != nil
+    }
+
+    var hasTaskpaneLauncher: Bool {
+        bundledTaskpaneLauncherURL != nil && accessibilityTrusted
+    }
+
+    var hasLocalhostCertificate: Bool {
+        certificateURL != nil && keyURL != nil
+    }
+}
+
 struct HelperSetupState {
     let wordInstallStatus: WordInstallStatus
     let taskpaneServerReachable: Bool
@@ -250,6 +286,33 @@ struct HelperSetupState {
     let wordAppRunning: Bool
     let connectedSessionCount: Int
     let assetAvailability: HelperAssetAvailability
+    let runtimeAvailability: HelperRuntimeAvailability
+
+    init(
+        wordInstallStatus: WordInstallStatus,
+        taskpaneServerReachable: Bool,
+        taskpaneServerProcessRunning: Bool,
+        taskpaneServerStarting: Bool,
+        bridgeReachable: Bool,
+        bridgeProcessRunning: Bool,
+        bridgeStarting: Bool,
+        wordAppRunning: Bool,
+        connectedSessionCount: Int,
+        assetAvailability: HelperAssetAvailability,
+        runtimeAvailability: HelperRuntimeAvailability = .unavailable
+    ) {
+        self.wordInstallStatus = wordInstallStatus
+        self.taskpaneServerReachable = taskpaneServerReachable
+        self.taskpaneServerProcessRunning = taskpaneServerProcessRunning
+        self.taskpaneServerStarting = taskpaneServerStarting
+        self.bridgeReachable = bridgeReachable
+        self.bridgeProcessRunning = bridgeProcessRunning
+        self.bridgeStarting = bridgeStarting
+        self.wordAppRunning = wordAppRunning
+        self.connectedSessionCount = connectedSessionCount
+        self.assetAvailability = assetAvailability
+        self.runtimeAvailability = runtimeAvailability
+    }
 
     var hasWordSession: Bool {
         connectedSessionCount > 0
@@ -264,6 +327,15 @@ struct HelperSetupState {
     }
 
     var whyNotReadyExplanation: String {
+        if !runtimeAvailability.hasPackagedBridgeRuntime || !runtimeAvailability.hasPackagedTaskpaneServer {
+            return "The helper bundle is incomplete, so it cannot start its packaged runtime on this Mac yet."
+        }
+        if !runtimeAvailability.hasLocalhostCertificate {
+            return "The helper still needs to prepare and trust its localhost HTTPS certificate before Word can load the taskpane."
+        }
+        if !runtimeAvailability.accessibilityTrusted {
+            return "Grant macOS Accessibility permission so the helper can reopen the Word MCP Bridge taskpane for you."
+        }
         if !wordInstallStatus.isInstalledCurrent {
             return wordInstallStatus.statusSummary
         }
@@ -285,6 +357,15 @@ struct HelperSetupState {
     var currentStepLabel: String {
         if !assetAvailability.hasProductionManifest {
             return "Install assets missing"
+        }
+        if !runtimeAvailability.hasPackagedBridgeRuntime || !runtimeAvailability.hasPackagedTaskpaneServer {
+            return "Repair helper bundle"
+        }
+        if !runtimeAvailability.hasLocalhostCertificate {
+            return "Prepare certificate"
+        }
+        if !runtimeAvailability.accessibilityTrusted {
+            return "Allow Accessibility"
         }
         if !wordInstallStatus.isInstalledCurrent {
             return wordInstallStatus.requiresWordRestart ? "Restart Word" : "Install in Word"
@@ -310,6 +391,15 @@ struct HelperSetupState {
     var currentStepSummary: String {
         if !assetAvailability.hasProductionManifest {
             return "The helper could not find the local production add-in manifest yet."
+        }
+        if !runtimeAvailability.hasPackagedBridgeRuntime || !runtimeAvailability.hasPackagedTaskpaneServer {
+            return "The helper is missing bundled runtime files. Rebuild or reinstall the packaged app before trying again."
+        }
+        if !runtimeAvailability.hasLocalhostCertificate {
+            return "The helper still needs to prepare its localhost HTTPS certificate before Word can load the side panel."
+        }
+        if !runtimeAvailability.accessibilityTrusted {
+            return "Grant macOS Accessibility permission so the helper can reopen the Word MCP Bridge taskpane for you."
         }
         if !wordInstallStatus.isInstalledCurrent {
             return wordInstallStatus.statusSummary

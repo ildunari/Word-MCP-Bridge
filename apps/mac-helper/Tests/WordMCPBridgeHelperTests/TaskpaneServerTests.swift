@@ -40,12 +40,17 @@ final class TaskpaneServerTests: XCTestCase {
         let resourcesRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let taskpaneRoot = resourcesRoot.appendingPathComponent("taskpane", isDirectory: true)
-        let serverScript = taskpaneRoot.appendingPathComponent("serve_taskpane.py")
+        let serverScript = taskpaneRoot.appendingPathComponent("serve_taskpane.mjs")
         let distRoot = resourcesRoot.appendingPathComponent("taskpane-dist", isDirectory: true)
+        let bundledNodeRoot = resourcesRoot.appendingPathComponent("runtime/node/bin", isDirectory: true)
+        let bundledNode = bundledNodeRoot.appendingPathComponent("node")
 
         try FileManager.default.createDirectory(at: taskpaneRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: distRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bundledNodeRoot, withIntermediateDirectories: true)
         try Data("# test".utf8).write(to: serverScript)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: bundledNode)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundledNode.path)
         try Data("<html></html>".utf8).write(to: distRoot.appendingPathComponent("taskpane.html"))
 
         let spec = BridgeController.makeTaskpaneServerLaunchSpec(
@@ -57,12 +62,11 @@ final class TaskpaneServerTests: XCTestCase {
             keyURL: URL(fileURLWithPath: "/tmp/localhost.key")
         )
 
-        XCTAssertEqual(spec?.command, "/usr/bin/env")
+        XCTAssertEqual(spec?.command, bundledNode.path)
         XCTAssertEqual(spec?.currentDirectoryURL, resourcesRoot)
         XCTAssertEqual(
             spec?.args,
             [
-                "python3",
                 serverScript.path,
                 "--root",
                 distRoot.path,
@@ -74,6 +78,27 @@ final class TaskpaneServerTests: XCTestCase {
                 "/tmp/localhost.key",
             ]
         )
+    }
+
+    func testTaskpaneLauncherSpecUsesBundledCompiledLauncherBinary() throws {
+        let resourcesRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let launcherBinDir = resourcesRoot.appendingPathComponent("runtime/bin", isDirectory: true)
+        let launcherURL = launcherBinDir.appendingPathComponent("word-mcp-bridge-word-launcher")
+        try FileManager.default.createDirectory(at: launcherBinDir, withIntermediateDirectories: true)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: launcherURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcherURL.path)
+
+        let spec = BridgeController.makeTaskpaneLauncherSpec(
+            resourcesRoot: resourcesRoot,
+            repoRoot: nil,
+            bridgeURL: "https://localhost:4017",
+            timeoutSeconds: 20
+        )
+
+        XCTAssertEqual(spec?.command, launcherURL.path)
+        XCTAssertEqual(spec?.args, ["--mode", "open"])
+        XCTAssertEqual(spec?.currentDirectoryURL, resourcesRoot)
     }
 
     func testBridgeAutoStartDefaultsToEnabledAndRetriesWhenBridgeIsDown() {
@@ -177,6 +202,8 @@ final class TaskpaneServerTests: XCTestCase {
         let shouldAutoOpen = BridgeController.shouldAutoOpenTaskpane(
             autoOpenPreferenceValue: true,
             installReady: true,
+            certificateReady: true,
+            taskpaneLauncherReady: true,
             taskpaneReachable: true,
             bridgeReachable: true,
             wordRunning: true,
@@ -194,12 +221,52 @@ final class TaskpaneServerTests: XCTestCase {
         let shouldAutoOpen = BridgeController.shouldAutoOpenTaskpane(
             autoOpenPreferenceValue: true,
             installReady: true,
+            certificateReady: true,
+            taskpaneLauncherReady: true,
             taskpaneReachable: true,
             bridgeReachable: true,
             wordRunning: true,
             hasWordSession: false,
             isOpeningTaskpane: false,
             restartRequired: true,
+            lastAttemptAt: nil,
+            now: Date()
+        )
+
+        XCTAssertFalse(shouldAutoOpen)
+    }
+
+    func testTaskpaneAutoOpenStopsWhenCertificateIsNotReady() {
+        let shouldAutoOpen = BridgeController.shouldAutoOpenTaskpane(
+            autoOpenPreferenceValue: true,
+            installReady: true,
+            certificateReady: false,
+            taskpaneLauncherReady: true,
+            taskpaneReachable: true,
+            bridgeReachable: true,
+            wordRunning: true,
+            hasWordSession: false,
+            isOpeningTaskpane: false,
+            restartRequired: false,
+            lastAttemptAt: nil,
+            now: Date()
+        )
+
+        XCTAssertFalse(shouldAutoOpen)
+    }
+
+    func testTaskpaneAutoOpenStopsWhenAccessibilityAutomationIsNotReady() {
+        let shouldAutoOpen = BridgeController.shouldAutoOpenTaskpane(
+            autoOpenPreferenceValue: true,
+            installReady: true,
+            certificateReady: true,
+            taskpaneLauncherReady: false,
+            taskpaneReachable: true,
+            bridgeReachable: true,
+            wordRunning: true,
+            hasWordSession: false,
+            isOpeningTaskpane: false,
+            restartRequired: false,
             lastAttemptAt: nil,
             now: Date()
         )

@@ -36,6 +36,7 @@ final class BridgeControllerTests: XCTestCase {
 
         let snippet = BridgeController.makeMcpConfigSnippet(
             environment: ["PATH": "/usr/bin:/bin"],
+            resourcesRoot: nil,
             repoRoot: repoRoot,
             bridgeURL: "https://localhost:4017"
         )
@@ -44,6 +45,53 @@ final class BridgeControllerTests: XCTestCase {
         XCTAssertTrue(snippet.contains(bridgeScriptURL.path))
         XCTAssertTrue(snippet.contains("\"mcp-serve\""))
         XCTAssertFalse(snippet.contains("\"command\": \"npx\""))
+    }
+
+    func testMcpConfigUsesBundledRuntimeWrapperWhenAvailable() throws {
+        let resourcesRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtimeBinDir = resourcesRoot.appendingPathComponent("runtime/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeBinDir, withIntermediateDirectories: true)
+        let wrapperURL = runtimeBinDir.appendingPathComponent("office-bridge")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: wrapperURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapperURL.path)
+
+        let snippet = BridgeController.makeMcpConfigSnippet(
+            environment: ["PATH": "/usr/bin:/bin"],
+            resourcesRoot: resourcesRoot,
+            repoRoot: nil,
+            bridgeURL: "https://localhost:4017"
+        )
+
+        XCTAssertTrue(snippet.contains("\"command\": \"\(wrapperURL.path)\""))
+        XCTAssertFalse(snippet.contains("\"command\": \"office-bridge\""))
+        XCTAssertTrue(snippet.contains("\"mcp-serve\""))
+    }
+
+    func testBridgeLaunchSpecPrefersBundledRuntimeOverPathExecutable() throws {
+        let resourcesRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let runtimeBinDir = resourcesRoot.appendingPathComponent("runtime/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeBinDir, withIntermediateDirectories: true)
+        let bundledExecutable = runtimeBinDir.appendingPathComponent("office-bridge")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: bundledExecutable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundledExecutable.path)
+
+        let pathBinDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: pathBinDir, withIntermediateDirectories: true)
+        let pathExecutable = pathBinDir.appendingPathComponent("office-bridge")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: pathExecutable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: pathExecutable.path)
+
+        let spec = BridgeController.makeBridgeLaunchSpec(
+            environment: ["PATH": pathBinDir.path],
+            resourcesRoot: resourcesRoot,
+            repoRoot: nil
+        )
+
+        XCTAssertEqual(spec?.command, bundledExecutable.path)
+        XCTAssertEqual(spec?.args, ["serve"])
     }
 
     func testBridgeLaunchSpecFallsBackToOfficeBridgeExecutableFromPath() throws {
@@ -60,6 +108,7 @@ final class BridgeControllerTests: XCTestCase {
 
         let spec = BridgeController.makeBridgeLaunchSpec(
             environment: ["PATH": binDir.path],
+            resourcesRoot: nil,
             repoRoot: nil
         )
 

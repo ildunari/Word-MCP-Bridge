@@ -6,6 +6,19 @@ struct BridgeLaunchSpec: Equatable {
     let command: String
     let args: [String]
     let currentDirectoryURL: URL?
+    let environmentOverrides: [String: String]
+
+    init(
+        command: String,
+        args: [String],
+        currentDirectoryURL: URL?,
+        environmentOverrides: [String: String] = [:]
+    ) {
+        self.command = command
+        self.args = args
+        self.currentDirectoryURL = currentDirectoryURL
+        self.environmentOverrides = environmentOverrides
+    }
 }
 
 @MainActor
@@ -25,7 +38,8 @@ final class BridgeController: NSObject, ObservableObject {
         bridgeStarting: false,
         wordAppRunning: false,
         connectedSessionCount: 0,
-        assetAvailability: .unavailable
+        assetAvailability: .unavailable,
+        runtimeAvailability: .unavailable
     )
     @Published private(set) var isLoading = false
     @Published private(set) var isStarting = false
@@ -136,11 +150,32 @@ final class BridgeController: NSObject, ObservableObject {
         guard snapshot == nil else { return }
         let environment = launchEnvironment()
         let repoRoot = resolveRepoRoot()
-        guard let launchSpec = Self.makeBridgeLaunchSpec(environment: environment, repoRoot: repoRoot) else {
-            lastError =
-                "Could not start the bridge. Install `office-bridge` on your PATH, or set WORD_MCP_BRIDGE_REPO_ROOT to a local Word-MCP-Bridge checkout."
+        let certificateURLs: (certURL: URL, keyURL: URL)
+        do {
+            certificateURLs = try LocalhostCertificateService.ensureReady()
+        } catch {
+            lastError = "Could not prepare the helper's localhost certificate: \(error.localizedDescription)"
+            updateSetupState()
             return
         }
+
+        guard var launchSpec = Self.makeBridgeLaunchSpec(
+            environment: environment,
+            resourcesRoot: Bundle.main.resourceURL,
+            repoRoot: repoRoot
+        ) else {
+            lastError = "Could not start the bridge because the helper could not find a packaged bridge runtime or a local developer checkout."
+            return
+        }
+        launchSpec = BridgeLaunchSpec(
+            command: launchSpec.command,
+            args: launchSpec.args,
+            currentDirectoryURL: launchSpec.currentDirectoryURL,
+            environmentOverrides: launchSpec.environmentOverrides.merging([
+                "OFFICE_BRIDGE_CERT": certificateURLs.certURL.path(),
+                "OFFICE_BRIDGE_KEY": certificateURLs.keyURL.path(),
+            ], uniquingKeysWith: { _, new in new })
+        )
 
         isStarting = true
         lastError = nil
@@ -149,7 +184,7 @@ final class BridgeController: NSObject, ObservableObject {
         process.currentDirectoryURL = launchSpec.currentDirectoryURL
         process.executableURL = URL(fileURLWithPath: launchSpec.command)
         process.arguments = launchSpec.args
-        process.environment = environment
+        process.environment = environment.merging(launchSpec.environmentOverrides, uniquingKeysWith: { _, new in new })
         process.terminationHandler = { [weak self] process in
             Task { @MainActor [weak self] in
                 self?.bridgeProcess = nil
@@ -211,6 +246,7 @@ final class BridgeController: NSObject, ObservableObject {
     func copyMcpConfig() {
         let block = Self.makeMcpConfigSnippet(
             environment: launchEnvironment(),
+            resourcesRoot: Bundle.main.resourceURL,
             repoRoot: resolveRepoRoot(),
             bridgeURL: "https://localhost:4017"
         )
@@ -242,6 +278,20 @@ final class BridgeController: NSObject, ObservableObject {
             return
         }
         lastError = "Microsoft Word is not installed or could not be found."
+    }
+
+    func restartWordNow() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.wordInstallLastError = nil
+            do {
+                try await self.restartWordApplication()
+                self.updateSetupState()
+            } catch {
+                self.wordInstallLastError = error.localizedDescription
+                self.updateSetupState()
+            }
+        }
     }
 
     func openProductionManifest() {
@@ -301,7 +351,7 @@ final class BridgeController: NSObject, ObservableObject {
                 }
 
                 if self.wordInstallStatus.requiresWordRestart {
-                    self.wordInstallLastError = "The add-in was refreshed while Word was open. Restart Word, then click Open Word MCP Bridge again."
+                    self.wordInstallLastError = "The add-in was refreshed while Word was open. Use Restart Word Now, then click Open Word MCP Bridge again."
                     self.updateSetupState()
                     return
                 }
@@ -449,8 +499,11 @@ final class BridgeController: NSObject, ObservableObject {
             updateSetupState()
             return
         }
-        guard let certs = resolvedLocalhostCertificateURLs() else {
-            taskpaneServerLastError = "The localhost HTTPS certificate is missing. Install the Office add-in localhost certificate before opening the Word MCP Bridge taskpane."
+        let certs: (certURL: URL, keyURL: URL)
+        do {
+            certs = try LocalhostCertificateService.ensureReady()
+        } catch {
+            taskpaneServerLastError = "Could not prepare the helper's localhost HTTPS certificate: \(error.localizedDescription)"
             isTaskpaneServerReachable = false
             updateSetupState()
             return
@@ -690,6 +743,8 @@ final class BridgeController: NSObject, ObservableObject {
                 forKey: HelperPreferences.autoOpenWordTaskpaneOnWordLaunchKey
             ),
             installReady: wordInstallStatus.isInstalledCurrent,
+            certificateReady: setupState.runtimeAvailability.hasLocalhostCertificate,
+            taskpaneLauncherReady: setupState.runtimeAvailability.hasTaskpaneLauncher,
             taskpaneReachable: isTaskpaneServerReachable,
             bridgeReachable: snapshot != nil,
             wordRunning: isWordRunning,
@@ -725,6 +780,8 @@ final class BridgeController: NSObject, ObservableObject {
     nonisolated static func shouldAutoOpenTaskpane(
         autoOpenPreferenceValue: Any?,
         installReady: Bool,
+        certificateReady: Bool,
+        taskpaneLauncherReady: Bool,
         taskpaneReachable: Bool,
         bridgeReachable: Bool,
         wordRunning: Bool,
@@ -737,7 +794,7 @@ final class BridgeController: NSObject, ObservableObject {
     ) -> Bool {
         let autoOpenEnabled = (autoOpenPreferenceValue as? Bool) ?? true
         guard autoOpenEnabled else { return false }
-        guard installReady, taskpaneReachable, bridgeReachable, wordRunning else { return false }
+        guard installReady, certificateReady, taskpaneLauncherReady, taskpaneReachable, bridgeReachable, wordRunning else { return false }
         guard !hasWordSession, !isOpeningTaskpane, !restartRequired else { return false }
         if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < retryInterval {
             return false
@@ -759,6 +816,29 @@ final class BridgeController: NSObject, ObservableObject {
                 bundledPath: "setup/SETUP-GUIDE.md",
                 repoRelativePath: "apps/mac-helper/SETUP-GUIDE.md"
             )
+        )
+    }
+
+    private func resolvedRuntimeAvailability() -> HelperRuntimeAvailability {
+        let resourcesRoot = Bundle.main.resourceURL
+        let repoRoot = resolveRepoRoot()
+        let repoBridgeURL = repoRoot.flatMap { Self.repoBridgeScriptURL(repoRoot: $0) }
+        let repoTaskpaneServerURL = repoRoot.map {
+            Self.appendingRelativePath("apps/mac-helper/Scripts/serve_taskpane.mjs", to: $0)
+        }.flatMap { FileManager.default.fileExists(atPath: $0.path()) ? $0 : nil }
+        let repoTaskpaneLauncherURL = repoRoot.map {
+            Self.appendingRelativePath("scripts/bridge/launch-word-taskpane.sh", to: $0)
+        }.flatMap { FileManager.default.fileExists(atPath: $0.path()) ? $0 : nil }
+        let nodePath = Self.findExecutable(named: "node", environment: launchEnvironment())
+        let certificateURLs = resolvedLocalhostCertificateURLs()
+        return HelperRuntimeAvailability(
+            bundledBridgeExecutableURL: Self.resolvedBundledBridgeExecutableURL(resourcesRoot: resourcesRoot) ?? repoBridgeURL,
+            bundledTaskpaneServerScriptURL: Self.resolvedBundledTaskpaneServerScriptURL(resourcesRoot: resourcesRoot) ?? repoTaskpaneServerURL,
+            bundledTaskpaneLauncherURL: Self.resolvedBundledTaskpaneLauncherURL(resourcesRoot: resourcesRoot) ?? repoTaskpaneLauncherURL,
+            bundledNodeURL: Self.resolvedBundledNodeURL(resourcesRoot: resourcesRoot) ?? nodePath.map { URL(fileURLWithPath: $0) },
+            certificateURL: certificateURLs?.certURL,
+            keyURL: certificateURLs?.keyURL,
+            accessibilityTrusted: AXIsProcessTrusted()
         )
     }
 
@@ -799,14 +879,7 @@ final class BridgeController: NSObject, ObservableObject {
     }
 
     private func resolvedLocalhostCertificateURLs() -> (certURL: URL, keyURL: URL)? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let certURL = home.appending(path: ".office-addin-dev-certs/localhost.crt")
-        let keyURL = home.appending(path: ".office-addin-dev-certs/localhost.key")
-        guard FileManager.default.fileExists(atPath: certURL.path()),
-              FileManager.default.fileExists(atPath: keyURL.path()) else {
-            return nil
-        }
-        return (certURL, keyURL)
+        LocalhostCertificateService.resolveExistingCertificateURLs()
     }
 
     nonisolated static func appendingRelativePath(_ relativePath: String, to baseURL: URL) -> URL {
@@ -817,7 +890,19 @@ final class BridgeController: NSObject, ObservableObject {
             }
     }
 
-    nonisolated static func makeBridgeLaunchSpec(environment: [String: String], repoRoot: URL?) -> BridgeLaunchSpec? {
+    nonisolated static func makeBridgeLaunchSpec(
+        environment: [String: String],
+        resourcesRoot: URL?,
+        repoRoot: URL?
+    ) -> BridgeLaunchSpec? {
+        if let bundledExecutable = resolvedBundledBridgeExecutableURL(resourcesRoot: resourcesRoot) {
+            return BridgeLaunchSpec(
+                command: bundledExecutable.path,
+                args: ["serve"],
+                currentDirectoryURL: resourcesRoot
+            )
+        }
+
         if let repoRoot, let bridgeScriptURL = repoBridgeScriptURL(repoRoot: repoRoot) {
             return BridgeLaunchSpec(
                 command: "/usr/bin/env",
@@ -853,17 +938,19 @@ final class BridgeController: NSObject, ObservableObject {
         certURL: URL,
         keyURL: URL
     ) -> BridgeLaunchSpec? {
-        let bundledScript = resourcesRoot.map { appendingRelativePath("taskpane/serve_taskpane.py", to: $0) }
+        let bundledNode = resolvedBundledNodeURL(resourcesRoot: resourcesRoot)
+        let bundledScript = resourcesRoot.map { appendingRelativePath("taskpane/serve_taskpane.mjs", to: $0) }
         let bundledAssets = resourcesRoot.map { appendingRelativePath("taskpane-dist", to: $0) }
 
-        if let scriptURL = bundledScript,
+        if let nodeURL = bundledNode,
+           let scriptURL = bundledScript,
            let assetRoot = bundledAssets,
+           FileManager.default.isExecutableFile(atPath: nodeURL.path()),
            FileManager.default.fileExists(atPath: scriptURL.path()),
            FileManager.default.fileExists(atPath: assetRoot.appending(path: "taskpane.html").path()) {
             return BridgeLaunchSpec(
-                command: "/usr/bin/env",
+                command: nodeURL.path,
                 args: [
-                    "python3",
                     scriptURL.path,
                     "--root",
                     assetRoot.path,
@@ -879,14 +966,14 @@ final class BridgeController: NSObject, ObservableObject {
         }
 
         if let repoRoot {
-            let scriptURL = appendingRelativePath("apps/mac-helper/Scripts/serve_taskpane.py", to: repoRoot)
+            let scriptURL = appendingRelativePath("apps/mac-helper/Scripts/serve_taskpane.mjs", to: repoRoot)
             let assetRoot = appendingRelativePath("packages/word-addin/dist", to: repoRoot)
-            if FileManager.default.fileExists(atPath: scriptURL.path()),
+            if let nodePath = findExecutable(named: "node", environment: environment),
+               FileManager.default.fileExists(atPath: scriptURL.path()),
                FileManager.default.fileExists(atPath: assetRoot.appending(path: "taskpane.html").path()) {
                 return BridgeLaunchSpec(
-                    command: "/usr/bin/env",
+                    command: nodePath,
                     args: [
-                        "python3",
                         scriptURL.path,
                         "--root",
                         assetRoot.path,
@@ -911,26 +998,12 @@ final class BridgeController: NSObject, ObservableObject {
         bridgeURL: String,
         timeoutSeconds: Int
     ) -> BridgeLaunchSpec? {
-        let bundledRoot = resourcesRoot.map { appendingRelativePath("bridge-launch", to: $0) }
-        let bundledScript = bundledRoot.map {
-            appendingRelativePath("scripts/bridge/launch-word-taskpane.sh", to: $0)
-        }
-
-        if let bundledRoot,
-           let bundledScript,
-           FileManager.default.fileExists(atPath: bundledScript.path()) {
+        if let bundledLauncher = resolvedBundledTaskpaneLauncherURL(resourcesRoot: resourcesRoot),
+           FileManager.default.isExecutableFile(atPath: bundledLauncher.path()) {
             return BridgeLaunchSpec(
-                command: "/bin/bash",
-                args: [
-                    bundledScript.path,
-                    "--mode",
-                    "open",
-                    "--bridge-url",
-                    bridgeURL,
-                    "--timeout",
-                    "\(timeoutSeconds)",
-                ],
-                currentDirectoryURL: bundledRoot
+                command: bundledLauncher.path,
+                args: ["--mode", "open"],
+                currentDirectoryURL: resourcesRoot
             )
         }
 
@@ -956,8 +1029,18 @@ final class BridgeController: NSObject, ObservableObject {
         return nil
     }
 
-    nonisolated static func makeMcpConfigSnippet(environment: [String: String], repoRoot: URL?, bridgeURL: String) -> String {
-        let launchSpec = makeMcpLaunchSpec(environment: environment, repoRoot: repoRoot, bridgeURL: bridgeURL)
+    nonisolated static func makeMcpConfigSnippet(
+        environment: [String: String],
+        resourcesRoot: URL?,
+        repoRoot: URL?,
+        bridgeURL: String
+    ) -> String {
+        let launchSpec = makeMcpLaunchSpec(
+            environment: environment,
+            resourcesRoot: resourcesRoot,
+            repoRoot: repoRoot,
+            bridgeURL: bridgeURL
+        )
 
         let argsJSON = launchSpec.args
             .map { "\"\($0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\"" }
@@ -975,7 +1058,20 @@ final class BridgeController: NSObject, ObservableObject {
         """
     }
 
-    nonisolated static func makeMcpLaunchSpec(environment: [String: String], repoRoot: URL?, bridgeURL: String) -> BridgeLaunchSpec {
+    nonisolated static func makeMcpLaunchSpec(
+        environment: [String: String],
+        resourcesRoot: URL?,
+        repoRoot: URL?,
+        bridgeURL: String
+    ) -> BridgeLaunchSpec {
+        if let bundledExecutable = resolvedBundledBridgeExecutableURL(resourcesRoot: resourcesRoot) {
+            return BridgeLaunchSpec(
+                command: bundledExecutable.path,
+                args: ["mcp-serve", "--url", bridgeURL],
+                currentDirectoryURL: resourcesRoot
+            )
+        }
+
         if let repoRoot, let bridgeScriptURL = repoBridgeScriptURL(repoRoot: repoRoot) {
             return BridgeLaunchSpec(
                 command: "/usr/bin/env",
@@ -1004,6 +1100,30 @@ final class BridgeController: NSObject, ObservableObject {
         return FileManager.default.fileExists(atPath: scriptURL.path()) ? scriptURL : nil
     }
 
+    private nonisolated static func resolvedBundledBridgeExecutableURL(resourcesRoot: URL?) -> URL? {
+        guard let resourcesRoot else { return nil }
+        let executableURL = appendingRelativePath("runtime/bin/office-bridge", to: resourcesRoot)
+        return FileManager.default.fileExists(atPath: executableURL.path()) ? executableURL : nil
+    }
+
+    private nonisolated static func resolvedBundledNodeURL(resourcesRoot: URL?) -> URL? {
+        guard let resourcesRoot else { return nil }
+        let nodeURL = appendingRelativePath("runtime/node/bin/node", to: resourcesRoot)
+        return FileManager.default.fileExists(atPath: nodeURL.path()) ? nodeURL : nil
+    }
+
+    private nonisolated static func resolvedBundledTaskpaneServerScriptURL(resourcesRoot: URL?) -> URL? {
+        guard let resourcesRoot else { return nil }
+        let scriptURL = appendingRelativePath("taskpane/serve_taskpane.mjs", to: resourcesRoot)
+        return FileManager.default.fileExists(atPath: scriptURL.path()) ? scriptURL : nil
+    }
+
+    private nonisolated static func resolvedBundledTaskpaneLauncherURL(resourcesRoot: URL?) -> URL? {
+        guard let resourcesRoot else { return nil }
+        let launcherURL = appendingRelativePath("runtime/bin/word-mcp-bridge-word-launcher", to: resourcesRoot)
+        return FileManager.default.fileExists(atPath: launcherURL.path()) ? launcherURL : nil
+    }
+
     private nonisolated static func findExecutable(named executable: String, environment: [String: String]) -> String? {
         let searchPath = environment["PATH"] ?? ProcessInfo.processInfo.environment["PATH"] ?? ""
         for pathEntry in searchPath.split(separator: ":") {
@@ -1018,6 +1138,7 @@ final class BridgeController: NSObject, ObservableObject {
 
     private func updateSetupState() {
         let assetAvailability = resolvedAssetAvailability()
+        let runtimeAvailability = resolvedRuntimeAvailability()
         let installStatus = currentWordInstallStatus(assetAvailability: assetAvailability)
         wordInstallStatus = installStatus
         setupState = HelperSetupState(
@@ -1030,7 +1151,8 @@ final class BridgeController: NSObject, ObservableObject {
             bridgeStarting: isStarting,
             wordAppRunning: isWordRunning,
             connectedSessionCount: snapshot?.status.sessionCount ?? 0,
-            assetAvailability: assetAvailability
+            assetAvailability: assetAvailability,
+            runtimeAvailability: runtimeAvailability
         )
     }
 
@@ -1069,7 +1191,7 @@ final class BridgeController: NSObject, ObservableObject {
 
                 guard shouldOpenTaskpaneAfterInstall else { return }
                 guard !self.wordInstallStatus.requiresWordRestart else {
-                    self.wordInstallLastError = "The add-in was installed while Word was open. Restart Word, then click Open Word MCP Bridge."
+                    self.wordInstallLastError = "The add-in was installed while Word was open. Use Restart Word Now, then click Open Word MCP Bridge."
                     self.updateSetupState()
                     return
                 }
@@ -1149,6 +1271,34 @@ final class BridgeController: NSObject, ObservableObject {
         }
     }
 
+    private func restartWordApplication() async throws {
+        if isWordRunning {
+            _ = try runProcess(
+                command: "/usr/bin/osascript",
+                args: ["-e", "tell application \"Microsoft Word\" to quit"],
+                currentDirectoryURL: nil
+            )
+
+            let quitDeadline = Date().addingTimeInterval(15)
+            while Date() < quitDeadline {
+                if !isWordRunning {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+
+            guard !isWordRunning else {
+                throw NSError(
+                    domain: "BridgeController",
+                    code: 27,
+                    userInfo: [NSLocalizedDescriptionKey: "Word did not quit in time. Close it manually, then try again."]
+                )
+            }
+        }
+
+        try await ensureWordRunning()
+    }
+
     private func launchTaskpane(timeoutSeconds: Int = 20) async throws {
         guard let launchSpec = Self.makeTaskpaneLauncherSpec(
             resourcesRoot: Bundle.main.resourceURL,
@@ -1185,7 +1335,24 @@ final class BridgeController: NSObject, ObservableObject {
             )
         }
 
+        try await waitForWordSession(timeoutSeconds: Double(timeoutSeconds))
         await refresh(showLoading: false)
+    }
+
+    private func waitForWordSession(timeoutSeconds: TimeInterval = 12) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            await refresh(showLoading: false)
+            if snapshot?.status.sessions.contains(where: { $0.snapshot.app == "word" }) == true {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        throw NSError(
+            domain: "BridgeController",
+            code: 28,
+            userInfo: [NSLocalizedDescriptionKey: "The helper opened Word, but no live Word taskpane session appeared in time."]
+        )
     }
 
     private func runProcess(

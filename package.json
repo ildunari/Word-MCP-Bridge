@@ -25,9 +25,10 @@
     "helper:build": "swift build --package-path apps/mac-helper",
     "helper:run": "swift run --package-path apps/mac-helper WordMCPBridgeHelper",
     "package:helper": "bash apps/mac-helper/Scripts/package_app.sh",
+    "release:smoke:helper": "bash apps/mac-helper/Scripts/smoke_release_bundle.sh \"release/mac-helper/Word MCP Bridge Helper.app\"",
     "setup:word": "pnpm --filter @word-mcp-bridge/word-addin exec office-addin-dev-certs install && pnpm --filter @word-mcp-bridge/word-addin exec office-addin-manifest validate manifest.xml && pnpm --filter @word-mcp-bridge/word-addin exec office-addin-manifest validate manifest.prod.xml",
     "package:addin": "node scripts/package-addin.mjs",
-    "release:bundle": "pnpm build && node scripts/package-addin.mjs && bash apps/mac-helper/Scripts/package_app.sh && pnpm --filter @word-mcp-bridge/bridge pack:check",
+    "release:bundle": "pnpm build && node scripts/package-addin.mjs && bash apps/mac-helper/Scripts/package_app.sh && pnpm release:smoke:helper && pnpm --filter @word-mcp-bridge/bridge pack:check",
     "start:word": "pnpm --filter @word-mcp-bridge/word-addin start",
     "stop:word": "pnpm --filter @word-mcp-bridge/word-addin stop"
   },

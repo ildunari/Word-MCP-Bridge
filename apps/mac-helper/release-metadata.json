@@ -1,0 +1,8 @@
+{
+  "appName": "Word MCP Bridge Helper",
+  "bundleIdentifier": "com.wordmcpbridge.helper",
+  "version": "1.0.0",
+  "buildNumber": "1",
+  "minimumMacOSVersion": "14.0",
+  "runtimeBridgePackageName": "@word-mcp-bridge/bridge"
+}
