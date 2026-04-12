@@ -276,10 +276,36 @@ describe("bridgeToolExecutionResultToMcpResult", () => {
         instanceId: "inst-2",
         app: "word",
         appName: "Microsoft Word",
+        metadataTag: null,
         documentId: "doc-2",
-        documentMetadata: { title: "Draft.docx" },
-        tools: [{ name: "word_get_document_text" }],
-        host: { href: "https://localhost:3014/taskpane.html" },
+        documentMetadata: {
+          title: "Draft.docx",
+          url: null,
+          trackingMode: null,
+          wordCount: null,
+          characterCount: null,
+          paragraphCount: null,
+          selectionLength: null,
+          updatedAt: null,
+          taskpaneVisibility: null,
+          sharedRuntimeEnabled: null,
+          startupBehavior: null,
+          hiddenActive: null,
+        },
+        host: {
+          host: null,
+          platform: null,
+          officeVersion: null,
+          href: "https://localhost:3014/taskpane.html",
+          title: null,
+        },
+        runtimeState: null,
+        gateway: {
+          capabilities: [],
+          liveContext: null,
+        },
+        toolNames: ["word_get_document_text"],
+        toolCount: 1,
         connectedAt: 1,
         updatedAt: 5,
       },
@@ -294,5 +320,86 @@ describe("bridgeToolExecutionResultToMcpResult", () => {
       },
       health: "live",
     });
+  });
+
+  it("keeps list-session style payloads genuinely compact by omitting tool definitions", () => {
+    const compact = compactBridgeSessionRecord({
+      snapshot: {
+        sessionId: "word:doc-3",
+        instanceId: "inst-3",
+        app: "word",
+        documentId: "doc-3",
+        documentMetadata: {
+          title: "Compact.docx",
+          trackingMode: "Off",
+          hiddenActive: true,
+        },
+        tools: [
+          {
+            name: "word_get_document_text",
+            description: "Very long tool description that should not be duplicated.",
+            parameters: { type: "object" },
+          },
+          {
+            name: "word_replace_text_range",
+            description: "Another verbose tool definition.",
+            parameters: { type: "object" },
+          },
+        ],
+        runtimeState: {
+          mode: "ready_hidden",
+          visibilityMode: "hidden",
+          paneVisibility: "hidden",
+          startupBehavior: "load",
+          startupBehaviorEnabled: true,
+          nextRecommendedAction: "Stay hidden.",
+        },
+        gateway: {
+          capabilities: ["observe", "tool_call"],
+          liveContext: {
+            selection: { hasSelection: false },
+            trackingMode: "Off",
+            focusTarget: "document",
+            updatedAt: 7,
+          },
+        },
+        host: {
+          href: "https://localhost:3013/taskpane.html",
+          title: "Word MCP Bridge",
+        },
+        connectedAt: 1,
+        updatedAt: 8,
+      },
+      connectedAt: 1,
+      lastSeenAt: 9,
+      recentEvents: [{ id: "event-1", event: "session_updated", ts: 7, payload: {} }],
+      pendingCount: 0,
+      metrics: {
+        toolCalls: 2,
+        toolErrors: 0,
+        eventsReceived: 4,
+        connectionDropCount: 0,
+      },
+      health: "live",
+    });
+
+    expect(compact.snapshot).toMatchObject({
+      toolNames: ["word_get_document_text", "word_replace_text_range"],
+      toolCount: 2,
+      runtimeState: {
+        mode: "ready_hidden",
+        paneVisibility: "hidden",
+        startupBehavior: "load",
+      },
+      gateway: {
+        capabilities: ["observe", "tool_call"],
+        liveContext: {
+          selection: { hasSelection: false },
+          focusTarget: "document",
+        },
+      },
+    });
+    expect((compact.snapshot as Record<string, unknown>).tools).toBeUndefined();
+    expect(JSON.stringify(compact)).not.toContain("Very long tool description");
   });
 });

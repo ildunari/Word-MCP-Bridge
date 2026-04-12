@@ -85,6 +85,12 @@ Helpful recovery command from the repo:
 scripts/bridge/launch-word-taskpane.sh --mode open
 ```
 
+Focused live smoke check from the repo:
+
+```bash
+pnpm bridge:smoke
+```
+
 ## MCP host setup
 
 The examples below assume the bridge server is already running locally at `https://localhost:4017`.

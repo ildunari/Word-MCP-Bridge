@@ -112,8 +112,19 @@ pnpm exec office-bridge summary word
 pnpm exec office-bridge snapshot word
 pnpm exec office-bridge status
 pnpm bridge:mcp
+pnpm bridge:smoke
 pnpm helper:run
 ```
+
+`pnpm bridge:smoke` runs a focused live smoke check for:
+
+- launcher recovery
+- compact `list_sessions` MCP output
+- shared-runtime hidden-session liveness reporting
+- table read/update behavior
+- rejection of unsafe zero `lineSpacing`
+
+To keep the active sidebar stable, the smoke run is read-first by default. Add `--launch` only when you want it to reopen the pane, and add `--write` only when you want it to exercise a live table cell update.
 
 ## Local production mode
 

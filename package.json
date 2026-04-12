@@ -20,6 +20,7 @@
     "bridge:mcp": "pnpm exec office-bridge mcp-serve",
     "bridge:stop": "pnpm exec office-bridge stop",
     "bridge:prepare-nih-lane": "node scripts/bridge/nih-validation.mjs",
+    "bridge:smoke": "node scripts/bridge/smoke-bridge.mjs",
     "dev-server:word": "pnpm --filter @word-mcp-bridge/word-addin dev-server",
     "helper:build": "swift build --package-path apps/mac-helper",
     "helper:run": "swift run --package-path apps/mac-helper WordMCPBridgeHelper",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.13",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@word-mcp-bridge/bridge": "workspace:*",
     "@types/node": "^25.1.0",
     "happy-dom": "^20.8.4",

@@ -153,8 +153,83 @@ function wordDocumentEntry(session: BridgeSessionRecord) {
 }
 
 export function compactBridgeSessionRecord(session: BridgeSessionRecord) {
+  const snapshot = session.snapshot;
+  const documentMetadata =
+    snapshot.documentMetadata &&
+    typeof snapshot.documentMetadata === "object" &&
+    !Array.isArray(snapshot.documentMetadata)
+      ? (snapshot.documentMetadata as Record<string, unknown>)
+      : null;
+  const compactDocumentMetadata = documentMetadata
+    ? {
+        title: documentMetadata.title ?? null,
+        url: documentMetadata.url ?? null,
+        trackingMode: documentMetadata.trackingMode ?? null,
+        wordCount: documentMetadata.wordCount ?? null,
+        characterCount: documentMetadata.characterCount ?? null,
+        paragraphCount: documentMetadata.paragraphCount ?? null,
+        selectionLength: documentMetadata.selectionLength ?? null,
+        updatedAt: documentMetadata.updatedAt ?? null,
+        taskpaneVisibility: documentMetadata.taskpaneVisibility ?? null,
+        sharedRuntimeEnabled: documentMetadata.sharedRuntimeEnabled ?? null,
+        startupBehavior: documentMetadata.startupBehavior ?? null,
+        hiddenActive: documentMetadata.hiddenActive ?? null,
+      }
+    : null;
+  const compactRuntimeState = snapshot.runtimeState
+    ? {
+        mode: snapshot.runtimeState.mode ?? null,
+        taskPhase: snapshot.runtimeState.taskPhase ?? null,
+        visibilityMode: snapshot.runtimeState.visibilityMode ?? null,
+        paneVisibility: snapshot.runtimeState.paneVisibility ?? null,
+        taskpaneVisibility: snapshot.runtimeState.taskpaneVisibility ?? null,
+        startupBehavior: snapshot.runtimeState.startupBehavior ?? null,
+        startupBehaviorEnabled: snapshot.runtimeState.startupBehaviorEnabled ?? null,
+        waitingState: snapshot.runtimeState.waitingState ?? null,
+        nextRecommendedAction: snapshot.runtimeState.nextRecommendedAction ?? null,
+      }
+    : null;
+  const compactLiveContext = snapshot.gateway?.liveContext
+    ? {
+        selection: snapshot.gateway.liveContext.selection
+          ? {
+              hasSelection: snapshot.gateway.liveContext.selection.hasSelection ?? false,
+            }
+          : null,
+        trackingMode: snapshot.gateway.liveContext.trackingMode ?? null,
+        focusTarget: snapshot.gateway.liveContext.focusTarget ?? null,
+        updatedAt: snapshot.gateway.liveContext.updatedAt ?? null,
+      }
+    : null;
+
   return {
-    snapshot: session.snapshot,
+    snapshot: {
+      sessionId: snapshot.sessionId,
+      instanceId: snapshot.instanceId,
+      app: snapshot.app,
+      appName: snapshot.appName ?? null,
+      metadataTag: snapshot.metadataTag ?? null,
+      documentId: snapshot.documentId,
+      documentMetadata: compactDocumentMetadata,
+      host: snapshot.host
+        ? {
+            host: snapshot.host.host ?? null,
+            platform: snapshot.host.platform ?? null,
+            officeVersion: snapshot.host.officeVersion ?? null,
+            href: snapshot.host.href ?? null,
+            title: snapshot.host.title ?? null,
+          }
+        : null,
+      runtimeState: compactRuntimeState,
+      gateway: {
+        capabilities: snapshot.gateway?.capabilities ?? [],
+        liveContext: compactLiveContext,
+      },
+      toolNames: snapshot.tools.map((tool) => tool.name),
+      toolCount: snapshot.tools.length,
+      connectedAt: snapshot.connectedAt,
+      updatedAt: snapshot.updatedAt,
+    },
     connectedAt: session.connectedAt,
     lastSeenAt: session.lastSeenAt,
     pendingCount: session.pendingCount,
