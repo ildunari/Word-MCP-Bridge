@@ -4,6 +4,7 @@ import SwiftUI
 
 enum HelperPreferences {
     static let autoStartBridgeOnLaunchKey = "autoStartBridgeOnLaunch"
+    static let autoOpenWordTaskpaneOnWordLaunchKey = "autoOpenWordTaskpaneOnWordLaunch"
     static let notificationsEnabledKey = "notificationsEnabled"
     static let hasCompletedOnboardingKey = "hasCompletedOnboarding"
     static let dismissSetupBannerKey = "dismissSetupBanner"
@@ -25,6 +26,7 @@ enum LaunchAtLoginManager {
 
 struct SettingsView: View {
     @AppStorage(HelperPreferences.autoStartBridgeOnLaunchKey) private var autoStartBridgeOnLaunch = true
+    @AppStorage(HelperPreferences.autoOpenWordTaskpaneOnWordLaunchKey) private var autoOpenWordTaskpaneOnWordLaunch = true
     @AppStorage(HelperPreferences.notificationsEnabledKey) private var notificationsEnabled = true
     @State private var launchAtLoginEnabled = LaunchAtLoginManager.isEnabled()
     @State private var launchAtLoginError: String?
@@ -41,6 +43,11 @@ struct SettingsView: View {
                 Text("When enabled, opening the helper also starts the local bridge automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("Auto-open Word MCP Bridge when Word launches", isOn: $autoOpenWordTaskpaneOnWordLaunch)
+                Text("When enabled, the helper reopens the Word MCP Bridge panel after Word launches and the local services are healthy.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Notifications") {
@@ -51,7 +58,7 @@ struct SettingsView: View {
             }
 
             Section("Notes") {
-                Text("Normal installs: add the local production manifest once, then let the helper serve the taskpane from this Mac.")
+                Text("Normal installs: let the helper install or repair the local production manifest, then let the helper serve the taskpane from this Mac.")
                 Text("Local dev: use the helper panel’s Actions section when you explicitly want to sideload from this repo.")
             }
 

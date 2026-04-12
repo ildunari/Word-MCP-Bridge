@@ -223,31 +223,6 @@ private func basename(_ value: String) -> String {
     value.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? value
 }
 
-enum HelperInstallFlow: String, CaseIterable, Identifiable {
-    case production
-    case localDev
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .production:
-            return "Local production add-in"
-        case .localDev:
-            return "Local dev"
-        }
-    }
-
-    var summary: String {
-        switch self {
-        case .production:
-            return "Recommended for normal use. Install the local production add-in once, then let the helper serve the taskpane on this machine."
-        case .localDev:
-            return "For developers working from this repo with the local manifest and dev server."
-        }
-    }
-}
-
 struct HelperAssetAvailability {
     let productionManifestURL: URL?
     let developmentManifestURL: URL?
@@ -265,6 +240,7 @@ struct HelperAssetAvailability {
 }
 
 struct HelperSetupState {
+    let wordInstallStatus: WordInstallStatus
     let taskpaneServerReachable: Bool
     let taskpaneServerProcessRunning: Bool
     let taskpaneServerStarting: Bool
@@ -280,12 +256,38 @@ struct HelperSetupState {
     }
 
     var isReady: Bool {
-        taskpaneServerReachable && bridgeReachable && hasWordSession
+        wordInstallStatus.isInstalledCurrent && taskpaneServerReachable && bridgeReachable && hasWordSession
+    }
+
+    var installReady: Bool {
+        wordInstallStatus.isInstalledCurrent
+    }
+
+    var whyNotReadyExplanation: String {
+        if !wordInstallStatus.isInstalledCurrent {
+            return wordInstallStatus.statusSummary
+        }
+        if !taskpaneServerReachable {
+            return "The local taskpane page is not reachable, so Word has nothing valid to load in the sidebar yet."
+        }
+        if !bridgeReachable {
+            return "The local bridge is not reachable, so the taskpane cannot attach back to the helper."
+        }
+        if !wordAppRunning {
+            return "Microsoft Word is not open yet, so the add-in cannot connect."
+        }
+        if !hasWordSession {
+            return "The add-in is installed and the local services are healthy, but the Word MCP Bridge panel is not open in Word yet."
+        }
+        return "Everything the helper needs is up and connected."
     }
 
     var currentStepLabel: String {
         if !assetAvailability.hasProductionManifest {
             return "Install assets missing"
+        }
+        if !wordInstallStatus.isInstalledCurrent {
+            return wordInstallStatus.requiresWordRestart ? "Restart Word" : "Install in Word"
         }
         if taskpaneServerStarting {
             return "Starting local panel"
@@ -308,6 +310,9 @@ struct HelperSetupState {
     var currentStepSummary: String {
         if !assetAvailability.hasProductionManifest {
             return "The helper could not find the local production add-in manifest yet."
+        }
+        if !wordInstallStatus.isInstalledCurrent {
+            return wordInstallStatus.statusSummary
         }
         if taskpaneServerStarting {
             return "The helper is starting its local taskpane server so Word can load the side panel from this machine."

@@ -12,9 +12,11 @@ struct BridgeLaunchSpec: Equatable {
 final class BridgeController: NSObject, ObservableObject {
     nonisolated private static let bridgeAutoStartRetryInterval: TimeInterval = 10
     nonisolated private static let taskpaneAutoStartRetryInterval: TimeInterval = 10
+    nonisolated private static let taskpaneAutoOpenRetryInterval: TimeInterval = 15
 
     @Published private(set) var snapshot: HelperSnapshot?
     @Published private(set) var setupState = HelperSetupState(
+        wordInstallStatus: .unavailable,
         taskpaneServerReachable: false,
         taskpaneServerProcessRunning: false,
         taskpaneServerStarting: false,
@@ -33,6 +35,10 @@ final class BridgeController: NSObject, ObservableObject {
     @Published private(set) var taskpaneServerLastError: String?
     @Published private(set) var isWordAddinStarting = false
     @Published private(set) var wordAddinLastError: String?
+    @Published private(set) var wordInstallStatus: WordInstallStatus = .unavailable
+    @Published private(set) var isInstallingWordAddin = false
+    @Published private(set) var isOpeningWordTaskpane = false
+    @Published private(set) var wordInstallLastError: String?
 
     private var pollTask: Task<Void, Never>?
     private var bridgeProcess: Process?
@@ -41,6 +47,7 @@ final class BridgeController: NSObject, ObservableObject {
     private var isTaskpaneServerReachable = false
     private var lastBridgeAutoStartAttemptAt: Date?
     private var lastTaskpaneAutoStartAttemptAt: Date?
+    private var lastTaskpaneAutoOpenAttemptAt: Date?
     private var previousSnapshot: HelperSnapshot?
     private var previousBridgeReachable = false
     private lazy var session: URLSession = {
@@ -91,6 +98,7 @@ final class BridgeController: NSObject, ObservableObject {
                 self.autoStartBridgeIfNeeded()
                 await self.refresh(showLoading: false)
                 await self.refreshTaskpaneServer()
+                self.autoOpenTaskpaneIfNeeded()
                 try? await Task.sleep(for: .seconds(3))
             }
         }
@@ -258,6 +266,53 @@ final class BridgeController: NSObject, ObservableObject {
             return
         }
         NSWorkspace.shared.open(setupGuideURL)
+    }
+
+    func installInWord() {
+        runWordInstallWorkflow(forceReinstall: false, shouldOpenTaskpaneAfterInstall: true)
+    }
+
+    func reinstallInWord() {
+        runWordInstallWorkflow(forceReinstall: true, shouldOpenTaskpaneAfterInstall: true)
+    }
+
+    func repairWordInstall() {
+        runWordInstallWorkflow(forceReinstall: true, shouldOpenTaskpaneAfterInstall: true)
+    }
+
+    func openWordMcpBridge() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isOpeningWordTaskpane = true
+            defer {
+                self.isOpeningWordTaskpane = false
+            }
+
+            self.wordInstallLastError = nil
+            do {
+                try await self.ensureProductionRuntimeReady()
+                let currentStatus = self.currentWordInstallStatus()
+                if !currentStatus.isInstalledCurrent {
+                    let installResult = try WordInstallService.installBundledManifest(
+                        bundledManifestURL: currentStatus.bundledManifestURL ?? self.resolvedAssetAvailability().productionManifestURL,
+                        wordIsRunning: self.isWordRunning
+                    )
+                    self.wordInstallStatus = installResult.status
+                }
+
+                if self.wordInstallStatus.requiresWordRestart {
+                    self.wordInstallLastError = "The add-in was refreshed while Word was open. Restart Word, then click Open Word MCP Bridge again."
+                    self.updateSetupState()
+                    return
+                }
+
+                try await self.ensureWordRunning()
+                try await self.launchTaskpane()
+            } catch {
+                self.wordInstallLastError = error.localizedDescription
+                self.updateSetupState()
+            }
+        }
     }
 
     func completeOnboarding() {
@@ -629,6 +684,27 @@ final class BridgeController: NSObject, ObservableObject {
         startTaskpaneServer()
     }
 
+    private func autoOpenTaskpaneIfNeeded() {
+        guard Self.shouldAutoOpenTaskpane(
+            autoOpenPreferenceValue: UserDefaults.standard.object(
+                forKey: HelperPreferences.autoOpenWordTaskpaneOnWordLaunchKey
+            ),
+            installReady: wordInstallStatus.isInstalledCurrent,
+            taskpaneReachable: isTaskpaneServerReachable,
+            bridgeReachable: snapshot != nil,
+            wordRunning: isWordRunning,
+            hasWordSession: setupState.hasWordSession,
+            isOpeningTaskpane: isOpeningWordTaskpane || isInstallingWordAddin,
+            restartRequired: wordInstallStatus.requiresWordRestart,
+            lastAttemptAt: lastTaskpaneAutoOpenAttemptAt,
+            now: Date()
+        ) else {
+            return
+        }
+        lastTaskpaneAutoOpenAttemptAt = Date()
+        openWordMcpBridge()
+    }
+
     nonisolated static func shouldAutoStartTaskpaneServer(
         taskpaneReachable: Bool,
         taskpaneProcessRunning: Bool,
@@ -643,6 +719,29 @@ final class BridgeController: NSObject, ObservableObject {
             return false
         }
 
+        return true
+    }
+
+    nonisolated static func shouldAutoOpenTaskpane(
+        autoOpenPreferenceValue: Any?,
+        installReady: Bool,
+        taskpaneReachable: Bool,
+        bridgeReachable: Bool,
+        wordRunning: Bool,
+        hasWordSession: Bool,
+        isOpeningTaskpane: Bool,
+        restartRequired: Bool,
+        lastAttemptAt: Date?,
+        now: Date,
+        retryInterval: TimeInterval = taskpaneAutoOpenRetryInterval
+    ) -> Bool {
+        let autoOpenEnabled = (autoOpenPreferenceValue as? Bool) ?? true
+        guard autoOpenEnabled else { return false }
+        guard installReady, taskpaneReachable, bridgeReachable, wordRunning else { return false }
+        guard !hasWordSession, !isOpeningTaskpane, !restartRequired else { return false }
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < retryInterval {
+            return false
+        }
         return true
     }
 
@@ -806,6 +905,57 @@ final class BridgeController: NSObject, ObservableObject {
         return nil
     }
 
+    nonisolated static func makeTaskpaneLauncherSpec(
+        resourcesRoot: URL?,
+        repoRoot: URL?,
+        bridgeURL: String,
+        timeoutSeconds: Int
+    ) -> BridgeLaunchSpec? {
+        let bundledRoot = resourcesRoot.map { appendingRelativePath("bridge-launch", to: $0) }
+        let bundledScript = bundledRoot.map {
+            appendingRelativePath("scripts/bridge/launch-word-taskpane.sh", to: $0)
+        }
+
+        if let bundledRoot,
+           let bundledScript,
+           FileManager.default.fileExists(atPath: bundledScript.path()) {
+            return BridgeLaunchSpec(
+                command: "/bin/bash",
+                args: [
+                    bundledScript.path,
+                    "--mode",
+                    "open",
+                    "--bridge-url",
+                    bridgeURL,
+                    "--timeout",
+                    "\(timeoutSeconds)",
+                ],
+                currentDirectoryURL: bundledRoot
+            )
+        }
+
+        if let repoRoot {
+            let scriptURL = appendingRelativePath("scripts/bridge/launch-word-taskpane.sh", to: repoRoot)
+            if FileManager.default.fileExists(atPath: scriptURL.path()) {
+                return BridgeLaunchSpec(
+                    command: "/bin/bash",
+                    args: [
+                        scriptURL.path,
+                        "--mode",
+                        "open",
+                        "--bridge-url",
+                        bridgeURL,
+                        "--timeout",
+                        "\(timeoutSeconds)",
+                    ],
+                    currentDirectoryURL: repoRoot
+                )
+            }
+        }
+
+        return nil
+    }
+
     nonisolated static func makeMcpConfigSnippet(environment: [String: String], repoRoot: URL?, bridgeURL: String) -> String {
         let launchSpec = makeMcpLaunchSpec(environment: environment, repoRoot: repoRoot, bridgeURL: bridgeURL)
 
@@ -868,7 +1018,10 @@ final class BridgeController: NSObject, ObservableObject {
 
     private func updateSetupState() {
         let assetAvailability = resolvedAssetAvailability()
+        let installStatus = currentWordInstallStatus(assetAvailability: assetAvailability)
+        wordInstallStatus = installStatus
         setupState = HelperSetupState(
+            wordInstallStatus: installStatus,
             taskpaneServerReachable: isTaskpaneServerReachable,
             taskpaneServerProcessRunning: taskpaneServerProcess?.isRunning == true,
             taskpaneServerStarting: isTaskpaneServerStarting,
@@ -879,6 +1032,184 @@ final class BridgeController: NSObject, ObservableObject {
             connectedSessionCount: snapshot?.status.sessionCount ?? 0,
             assetAvailability: assetAvailability
         )
+    }
+
+    private func currentWordInstallStatus(assetAvailability: HelperAssetAvailability? = nil) -> WordInstallStatus {
+        WordInstallService.evaluateInstallStatus(
+            bundledManifestURL: (assetAvailability ?? resolvedAssetAvailability()).productionManifestURL,
+            wordIsRunning: isWordRunning
+        )
+    }
+
+    private func runWordInstallWorkflow(forceReinstall: Bool, shouldOpenTaskpaneAfterInstall: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isInstallingWordAddin = true
+            defer {
+                self.isInstallingWordAddin = false
+            }
+
+            self.wordInstallLastError = nil
+            do {
+                try await self.ensureProductionRuntimeReady()
+                let existingStatus = self.currentWordInstallStatus()
+
+                if forceReinstall || !existingStatus.isInstalledCurrent {
+                    let installResult = try WordInstallService.installBundledManifest(
+                        bundledManifestURL: existingStatus.bundledManifestURL ?? self.resolvedAssetAvailability().productionManifestURL,
+                        wordIsRunning: self.isWordRunning
+                    )
+                    self.wordInstallStatus = installResult.status
+                } else {
+                    self.wordInstallStatus = existingStatus
+                }
+
+                self.updateSetupState()
+                try await self.ensureWordRunning()
+
+                guard shouldOpenTaskpaneAfterInstall else { return }
+                guard !self.wordInstallStatus.requiresWordRestart else {
+                    self.wordInstallLastError = "The add-in was installed while Word was open. Restart Word, then click Open Word MCP Bridge."
+                    self.updateSetupState()
+                    return
+                }
+                try await self.launchTaskpane()
+            } catch {
+                self.wordInstallLastError = error.localizedDescription
+                self.updateSetupState()
+            }
+        }
+    }
+
+    private func ensureProductionRuntimeReady() async throws {
+        if !isTaskpaneServerReachable, !isTaskpaneServerStarting {
+            startTaskpaneServer()
+        }
+        if snapshot == nil, !isStarting {
+            startBridge()
+        }
+        try await waitForLocalTaskpaneServer()
+        try await waitForBridge()
+    }
+
+    private func waitForLocalTaskpaneServer(timeoutSeconds: TimeInterval = 8) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            await refreshTaskpaneServer()
+            if isTaskpaneServerReachable {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        throw NSError(
+            domain: "BridgeController",
+            code: 20,
+            userInfo: [NSLocalizedDescriptionKey: "The local taskpane page on port 3014 did not become reachable in time."]
+        )
+    }
+
+    private func waitForBridge(timeoutSeconds: TimeInterval = 8) async throws {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            await refresh(showLoading: false)
+            if snapshot != nil {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        throw NSError(
+            domain: "BridgeController",
+            code: 21,
+            userInfo: [NSLocalizedDescriptionKey: "The local bridge on port 4017 did not become reachable in time."]
+        )
+    }
+
+    private func ensureWordRunning() async throws {
+        if !WordInstallService.isWordInstalled() {
+            throw NSError(
+                domain: "BridgeController",
+                code: 22,
+                userInfo: [NSLocalizedDescriptionKey: "Microsoft Word is not installed or could not be found."]
+            )
+        }
+        if !isWordRunning {
+            openWord()
+            let deadline = Date().addingTimeInterval(8)
+            while Date() < deadline {
+                if isWordRunning {
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            throw NSError(
+                domain: "BridgeController",
+                code: 23,
+                userInfo: [NSLocalizedDescriptionKey: "Microsoft Word did not launch in time."]
+            )
+        }
+    }
+
+    private func launchTaskpane(timeoutSeconds: Int = 20) async throws {
+        guard let launchSpec = Self.makeTaskpaneLauncherSpec(
+            resourcesRoot: Bundle.main.resourceURL,
+            repoRoot: resolveRepoRoot(),
+            bridgeURL: baseURL.absoluteString,
+            timeoutSeconds: timeoutSeconds
+        ) else {
+            throw NSError(
+                domain: "BridgeController",
+                code: 24,
+                userInfo: [NSLocalizedDescriptionKey: "The helper could not find the bundled Word taskpane launcher."]
+            )
+        }
+
+        let output = try runProcess(
+            command: launchSpec.command,
+            args: launchSpec.args,
+            currentDirectoryURL: launchSpec.currentDirectoryURL
+        )
+
+        if output.terminationStatus != 0 && output.terminationStatus != 2 {
+            throw NSError(
+                domain: "BridgeController",
+                code: 25,
+                userInfo: [NSLocalizedDescriptionKey: output.text.isEmpty ? "The Word taskpane launcher failed." : output.text]
+            )
+        }
+
+        if output.terminationStatus == 2 {
+            throw NSError(
+                domain: "BridgeController",
+                code: 26,
+                userInfo: [NSLocalizedDescriptionKey: output.text.isEmpty ? "The helper tried to open the taskpane, but no live Word bridge session appeared yet." : output.text]
+            )
+        }
+
+        await refresh(showLoading: false)
+    }
+
+    private func runProcess(
+        command: String,
+        args: [String],
+        currentDirectoryURL: URL?
+    ) throws -> (terminationStatus: Int32, text: String) {
+        let process = Process()
+        process.currentDirectoryURL = currentDirectoryURL
+        process.executableURL = URL(fileURLWithPath: command)
+        process.arguments = args
+        process.environment = launchEnvironment()
+
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+
+        try process.run()
+        process.waitUntilExit()
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let text = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (process.terminationStatus, text)
     }
 
     private func bridgeAuthToken() -> String? {

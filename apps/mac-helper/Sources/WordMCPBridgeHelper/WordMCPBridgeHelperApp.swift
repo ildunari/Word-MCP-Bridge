@@ -58,7 +58,6 @@ private struct HelperMenuView: View {
     @AppStorage(HelperPreferences.hasCompletedOnboardingKey) private var hasCompletedOnboarding = false
     @AppStorage(HelperPreferences.dismissSetupBannerKey) private var dismissSetupBanner = false
     @State private var selectedSection: HelperPanelSection = .overview
-    @State private var installFlow: HelperInstallFlow = .production
     @State private var didCopyConfig = false
     @State private var showsAdvancedActions = false
 
@@ -147,6 +146,11 @@ private struct HelperMenuView: View {
 
             HStack(spacing: 8) {
                 statusBadge(
+                    installStatusLabel,
+                    systemImage: installStatusIcon,
+                    color: controller.setupState.installReady ? .green : .secondary
+                )
+                statusBadge(
                     taskpaneStatusLabel,
                     systemImage: taskpaneStatusIcon,
                     color: controller.setupState.taskpaneServerReachable ? .green : .secondary
@@ -186,6 +190,9 @@ private struct HelperMenuView: View {
             if let wordErr = controller.wordAddinLastError {
                 errorLine(wordErr)
             }
+            if let installErr = controller.wordInstallLastError {
+                errorLine(installErr)
+            }
         }
     }
 
@@ -198,7 +205,7 @@ private struct HelperMenuView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Finish setup in this panel")
                     .font(.subheadline.weight(.semibold))
-                Text("Use the Setup section to install the add-in, verify readiness, and mark the helper ready once Word connects.")
+                Text("Use the Setup section to install the add-in into Word, repair it if needed, and confirm the helper is connected once Word opens the panel.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -265,10 +272,17 @@ private struct HelperMenuView: View {
             }
 
             compactSection("Readiness") {
-                readinessLine("Production manifest ready", ready: controller.setupState.assetAvailability.hasProductionManifest)
+                readinessLine("Word install ready", ready: controller.setupState.installReady)
                 readinessLine("Local panel server ready", ready: controller.setupState.taskpaneServerReachable)
                 readinessLine("Bridge reachable", ready: controller.setupState.bridgeReachable)
                 readinessLine("Word taskpane connected", ready: controller.setupState.hasWordSession)
+            }
+
+            compactSection("Why isn't this ready?") {
+                Text(controller.setupState.whyNotReadyExplanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             compactSection("Sessions") {
@@ -313,11 +327,16 @@ private struct HelperMenuView: View {
         VStack(alignment: .leading, spacing: 10) {
             compactSection("Setup checklist") {
                 readinessLine(
-                    "Production manifest available",
+                    "Production manifest bundled",
                     ready: controller.setupState.assetAvailability.hasProductionManifest,
                     summary: controller.setupState.assetAvailability.hasProductionManifest
-                        ? "The helper can reveal the local production manifest."
+                        ? "The helper can install the bundled production manifest into Word."
                         : "The local production manifest is missing from the app bundle or repo."
+                )
+                readinessLine(
+                    "Word install ready",
+                    ready: controller.setupState.installReady,
+                    summary: controller.setupState.wordInstallStatus.statusSummary
                 )
                 readinessLine(
                     "Local taskpane server running",
@@ -343,39 +362,39 @@ private struct HelperMenuView: View {
             }
 
             compactSection("Install flow") {
-                Picker("Install flow", selection: $installFlow) {
-                    ForEach(HelperInstallFlow.allCases) { flow in
-                        Text(flow.title).tag(flow)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Text(installFlow.summary)
+                Text(controller.setupState.wordInstallStatus.statusSummary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if installFlow == .production {
-                    actionPair(
-                        primaryTitle: "Reveal Production Manifest",
-                        primaryAction: controller.openProductionManifest,
-                        secondaryTitle: "Open Word",
-                        secondaryAction: controller.openWord
-                    )
-                } else {
-                    actionPair(
-                        primaryTitle: "Reveal Dev Manifest",
-                        primaryAction: controller.openDevelopmentManifest,
-                        secondaryTitle: "Open Word",
-                        secondaryAction: controller.openWord
-                    )
-                }
+                actionPair(
+                    primaryTitle: "Install in Word",
+                    primaryAction: controller.installInWord,
+                    secondaryTitle: "Open Word MCP Bridge",
+                    secondaryAction: controller.openWordMcpBridge,
+                    primaryDisabled: controller.isInstallingWordAddin,
+                    secondaryDisabled: controller.isOpeningWordTaskpane
+                )
+                actionPair(
+                    primaryTitle: "Repair Word Install",
+                    primaryAction: controller.repairWordInstall,
+                    secondaryTitle: "Reinstall in Word",
+                    secondaryAction: controller.reinstallInWord,
+                    primaryDisabled: controller.isInstallingWordAddin,
+                    secondaryDisabled: controller.isInstallingWordAddin
+                )
+                actionPair(
+                    primaryTitle: "Open Word",
+                    primaryAction: controller.openWord,
+                    secondaryTitle: "Copy MCP Config",
+                    secondaryAction: copyConfig
+                )
 
                 actionPair(
                     primaryTitle: "Open Setup Guide",
                     primaryAction: controller.openSetupGuide,
-                    secondaryTitle: "Copy MCP Config",
-                    secondaryAction: copyConfig
+                    secondaryTitle: "Reveal Production Manifest",
+                    secondaryAction: controller.openProductionManifest
                 )
             }
 
@@ -410,14 +429,30 @@ private struct HelperMenuView: View {
         VStack(alignment: .leading, spacing: 10) {
             compactSection("Word") {
                 actionPair(
-                    primaryTitle: "Open Word",
-                    primaryAction: controller.openWord,
-                    secondaryTitle: "Copy MCP Config",
-                    secondaryAction: copyConfig
+                    primaryTitle: "Open Word MCP Bridge",
+                    primaryAction: controller.openWordMcpBridge,
+                    secondaryTitle: "Open Word",
+                    secondaryAction: controller.openWord,
+                    primaryDisabled: controller.isOpeningWordTaskpane,
+                    secondaryDisabled: false
+                )
+                actionPair(
+                    primaryTitle: "Install in Word",
+                    primaryAction: controller.installInWord,
+                    secondaryTitle: "Repair Word Install",
+                    secondaryAction: controller.repairWordInstall,
+                    primaryDisabled: controller.isInstallingWordAddin,
+                    secondaryDisabled: controller.isInstallingWordAddin
                 )
             }
 
             compactSection("Resources") {
+                actionPair(
+                    primaryTitle: "Copy MCP Config",
+                    primaryAction: copyConfig,
+                    secondaryTitle: "Setup Guide",
+                    secondaryAction: controller.openSetupGuide
+                )
                 actionPair(
                     primaryTitle: "Production Manifest",
                     primaryAction: controller.openProductionManifest,
@@ -425,10 +460,10 @@ private struct HelperMenuView: View {
                     secondaryAction: controller.openManifestFolder
                 )
                 actionPair(
-                    primaryTitle: "Setup Guide",
-                    primaryAction: controller.openSetupGuide,
-                    secondaryTitle: "README",
-                    secondaryAction: controller.openRepoReadme
+                    primaryTitle: "README",
+                    primaryAction: controller.openRepoReadme,
+                    secondaryTitle: "Dev Manifest",
+                    secondaryAction: controller.openDevelopmentManifest
                 )
             }
 
@@ -675,6 +710,10 @@ private struct HelperMenuView: View {
         return "Bridge offline"
     }
 
+    private var installStatusLabel: String {
+        controller.setupState.wordInstallStatus.statusLabel
+    }
+
     private var taskpaneStatusLabel: String {
         if controller.setupState.taskpaneServerReachable {
             return "Local panel ready"
@@ -708,6 +747,23 @@ private struct HelperMenuView: View {
         return "xmark.circle"
     }
 
+    private var installStatusIcon: String {
+        switch controller.setupState.wordInstallStatus.state {
+        case .installedCurrent:
+            return controller.setupState.wordInstallStatus.requiresWordRestart
+                ? "arrow.clockwise.circle"
+                : "checkmark.seal.fill"
+        case .installedOutdated:
+            return "wrench.and.screwdriver"
+        case .notInstalled:
+            return "square.and.arrow.down"
+        case .installFailed:
+            return "exclamationmark.triangle"
+        case .unavailable:
+            return "questionmark.circle"
+        }
+    }
+
     private var wordAddinDevStatus: String {
         if controller.isWordAddinStarting {
             return "Starting Word dev add-in…"
@@ -739,6 +795,9 @@ private struct HelperMenuView: View {
     }
 
     private var noSessionSummary: String {
+        if !controller.setupState.installReady {
+            return controller.setupState.wordInstallStatus.statusSummary
+        }
         if !controller.setupState.taskpaneServerReachable {
             return "Keep the helper open so Word can load the local taskpane before connecting to the bridge."
         }

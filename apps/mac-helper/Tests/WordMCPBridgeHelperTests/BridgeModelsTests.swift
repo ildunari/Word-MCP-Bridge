@@ -68,6 +68,7 @@ final class BridgeModelsTests: XCTestCase {
 
     func testSetupStateSeparatesBridgeStartupFromWordSessionReadiness() {
         let state = HelperSetupState(
+            wordInstallStatus: .installedCurrentForTests,
             taskpaneServerReachable: true,
             taskpaneServerProcessRunning: true,
             taskpaneServerStarting: false,
@@ -87,8 +88,39 @@ final class BridgeModelsTests: XCTestCase {
         XCTAssertEqual(state.currentStepSummary, "The helper launched the local bridge and is waiting for it to become reachable.")
     }
 
+    func testSetupStateCallsForWordInstallBeforeAnythingElse() {
+        let state = HelperSetupState(
+            wordInstallStatus: WordInstallStatus(
+                state: .notInstalled,
+                bundledManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                installedManifestURL: nil,
+                bundledMetadata: nil,
+                installedMetadata: nil,
+                requiresWordRestart: false,
+                lastError: nil
+            ),
+            taskpaneServerReachable: true,
+            taskpaneServerProcessRunning: true,
+            taskpaneServerStarting: false,
+            bridgeReachable: true,
+            bridgeProcessRunning: true,
+            bridgeStarting: false,
+            wordAppRunning: true,
+            connectedSessionCount: 0,
+            assetAvailability: .init(
+                productionManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+                developmentManifestURL: nil,
+                setupGuideURL: nil
+            )
+        )
+
+        XCTAssertEqual(state.currentStepLabel, "Install in Word")
+        XCTAssertEqual(state.currentStepSummary, "The production add-in is not installed in Word yet.")
+    }
+
     func testSetupStatePromptsToOpenWordWhenBridgeIsReadyButWordIsClosed() {
         let state = HelperSetupState(
+            wordInstallStatus: .installedCurrentForTests,
             taskpaneServerReachable: true,
             taskpaneServerProcessRunning: true,
             taskpaneServerStarting: false,
@@ -110,6 +142,7 @@ final class BridgeModelsTests: XCTestCase {
 
     func testSetupStatePromptsToOpenTaskpaneWhenWordIsRunningWithoutSession() {
         let state = HelperSetupState(
+            wordInstallStatus: .installedCurrentForTests,
             taskpaneServerReachable: true,
             taskpaneServerProcessRunning: true,
             taskpaneServerStarting: false,
@@ -131,6 +164,7 @@ final class BridgeModelsTests: XCTestCase {
 
     func testSetupStateConnectedSummaryAllowsHiddenSharedRuntimeSessions() {
         let state = HelperSetupState(
+            wordInstallStatus: .installedCurrentForTests,
             taskpaneServerReachable: true,
             taskpaneServerProcessRunning: true,
             taskpaneServerStarting: false,
@@ -155,6 +189,7 @@ final class BridgeModelsTests: XCTestCase {
 
     func testSetupStateCallsOutLocalTaskpaneServerBeforeBridge() {
         let state = HelperSetupState(
+            wordInstallStatus: .installedCurrentForTests,
             taskpaneServerReachable: false,
             taskpaneServerProcessRunning: false,
             taskpaneServerStarting: false,
@@ -252,4 +287,16 @@ final class BridgeModelsTests: XCTestCase {
         XCTAssertTrue(payload.isHiddenSharedRuntimeSession)
         XCTAssertTrue(payload.startsAutomatically)
     }
+}
+
+private extension WordInstallStatus {
+    static let installedCurrentForTests = WordInstallStatus(
+        state: .installedCurrent,
+        bundledManifestURL: URL(fileURLWithPath: "/tmp/manifest.prod.xml"),
+        installedManifestURL: URL(fileURLWithPath: "/tmp/A89087D2-08B4-481F-8E40-7EB65D0966F9.manifest.xml"),
+        bundledMetadata: nil,
+        installedMetadata: nil,
+        requiresWordRestart: false,
+        lastError: nil
+    )
 }

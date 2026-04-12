@@ -22,20 +22,20 @@ The full chat side panel and old SDK/core runtime stack are intentionally out of
 
 The intended user flow is:
 
-1. Install the Word add-in once with the local production manifest.
-2. Put `Word MCP Bridge Helper.app` in `/Applications`.
-3. Optionally enable `Launch helper at login` in the helper settings.
-4. For normal use, open the helper, open Word, and open the `Word MCP Bridge` taskpane.
+1. Put `Word MCP Bridge Helper.app` in `/Applications`.
+2. Open the helper and click `Install in Word`.
+3. Click `Open Word MCP Bridge`.
+4. Optionally enable `Launch helper at login`, `Auto-start bridge when helper opens`, and `Auto-open Word MCP Bridge when Word launches`.
 
 After the taskpane connects, shared-runtime mode can keep the bridge alive even if the panel is hidden. The add-in install is persistent, but the visible open-pane state may still need to be restored for a given Word window after Word restarts or document windows are reopened.
 
 The helper app now includes:
 
-- a first-run setup window
-- a local-first install path
+- a first-run setup window plus persistent install and repair actions
+- a helper-owned local production install path
 - quick actions for Word, manifests, docs, and MCP config
 - optional bridge health notifications
-- startup preferences for launch-at-login and auto-start bridge
+- startup preferences for launch-at-login, auto-start bridge, and auto-open taskpane recovery
 
 ## One-time install
 
@@ -57,14 +57,15 @@ Copy the helper app into `/Applications` and open it.
 
 ### 2. Install the Word add-in once
 
-Use the helper app's `Getting Started` flow and choose the local production install path.
+Use the helper app's `Install in Word` action.
 
 That flow will:
 
-- reveal the local production manifest
-- open Word
-- tell you the exact next step inside Word
-- let you verify when the taskpane has connected back to the bridge
+- install or refresh the bundled local production manifest in Word's sideload folder
+- start the local taskpane server and bridge if needed
+- open Word when needed
+- guide you to restart Word only if the manifest changed while Word was already open
+- let you reopen the `Word MCP Bridge` taskpane from the helper
 
 If you want to do it manually, use:
 
@@ -76,11 +77,11 @@ If you want to do it manually, use:
 After the one-time install:
 
 1. Open `Word MCP Bridge Helper.app`.
-2. Open Word.
-3. Open the `Word MCP Bridge` taskpane in Word.
+2. Open Word, or let the helper reopen it.
+3. Use `Open Word MCP Bridge` if the panel is not already visible.
 4. Use your MCP-capable host.
 
-If the taskpane is not visible after reopening Word, use the helper or `scripts/bridge/launch-word-taskpane.sh --mode open` to restore it quickly. A hidden shared-runtime session still counts as healthy once it is attached.
+If the taskpane is not visible after reopening Word, use the helper's `Open Word MCP Bridge` or `Repair Word Install` actions to restore it quickly. A hidden shared-runtime session still counts as healthy once it is attached.
 
 If you enabled `Launch helper at login` and `Auto-start bridge when helper opens`, the helper should handle most of the local bridge setup automatically.
 
@@ -152,11 +153,12 @@ The helper app is now the main setup and operations surface. It can:
 - poll `https://localhost:4017/status`
 - start the local bridge with `pnpm bridge:serve`
 - stop the local bridge through the bridge shutdown endpoint
+- install or repair the bundled production Word manifest
 - show live totals for sessions, tool calls, errors, drops, and pending requests
-- open Word, manifests, and setup docs
+- open Word, repair the taskpane, and explain what is blocking readiness
 - copy a ready-to-paste MCP config block
 - guide first-run installation
-- optionally launch at login and auto-start the bridge
+- optionally launch at login, auto-start the bridge, and auto-open the taskpane when Word launches
 - optionally notify when Word disconnects or reconnects
 
 Build or run it directly from the repo:
@@ -168,6 +170,8 @@ pnpm package:helper
 ```
 
 The packaged `.app` uses bundled setup assets and bundled taskpane files for local production use. When running from the repo, it can still fall back to repo-local manifests and docs.
+
+If you are preparing a signed distribution build, `apps/mac-helper/Scripts/package_app.sh` now supports an optional `WORD_MCP_BRIDGE_CODESIGN_IDENTITY` environment variable so the packaged helper can be signed as part of the bundle step.
 
 ## Repo-local skills
 

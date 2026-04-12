@@ -172,4 +172,38 @@ final class TaskpaneServerTests: XCTestCase {
 
         XCTAssertFalse(shouldAutoStart)
     }
+
+    func testTaskpaneAutoOpenRunsWhenWordLaunchesIntoHealthyInstalledSetup() {
+        let shouldAutoOpen = BridgeController.shouldAutoOpenTaskpane(
+            autoOpenPreferenceValue: true,
+            installReady: true,
+            taskpaneReachable: true,
+            bridgeReachable: true,
+            wordRunning: true,
+            hasWordSession: false,
+            isOpeningTaskpane: false,
+            restartRequired: false,
+            lastAttemptAt: nil,
+            now: Date()
+        )
+
+        XCTAssertTrue(shouldAutoOpen)
+    }
+
+    func testTaskpaneAutoOpenStopsWhenRestartIsRequired() {
+        let shouldAutoOpen = BridgeController.shouldAutoOpenTaskpane(
+            autoOpenPreferenceValue: true,
+            installReady: true,
+            taskpaneReachable: true,
+            bridgeReachable: true,
+            wordRunning: true,
+            hasWordSession: false,
+            isOpeningTaskpane: false,
+            restartRequired: true,
+            lastAttemptAt: nil,
+            now: Date()
+        )
+
+        XCTAssertFalse(shouldAutoOpen)
+    }
 }
