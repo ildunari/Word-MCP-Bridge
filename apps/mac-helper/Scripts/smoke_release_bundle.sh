@@ -79,3 +79,12 @@ TASKPANE_PID="$!"
 
 wait_for_url "https://localhost:${TASKPANE_PORT}/healthz"
 curl -ksSf "https://localhost:${TASKPANE_PORT}/taskpane.html" >/dev/null
+
+"$TASKPANE_NODE" scripts/bridge/smoke-bridge.mjs \
+  --schema-only \
+  --json \
+  --bridge-url "https://localhost:${PORT}" \
+  --mcp-command "$OFFICE_BRIDGE" \
+  --mcp-arg mcp-serve \
+  --mcp-arg --url \
+  --mcp-arg "https://localhost:${PORT}" >/dev/null

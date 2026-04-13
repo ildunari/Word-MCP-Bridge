@@ -1,4 +1,5 @@
 import {
+  normalizeWordToolArgs,
   WORD_TOOL_CONTRACTS,
   type WordToolContract,
 } from "@word-mcp-bridge/bridge/word-tool-contracts";
@@ -44,6 +45,31 @@ function asObject(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" && !Array.isArray(args)
     ? (args as Record<string, unknown>)
     : {};
+}
+
+const FORMAT_TEXT_RANGE_ALLOWED_KEYS = new Set([
+  "target",
+  "paragraphIndex",
+  "startOffset",
+  "endOffset",
+  "bold",
+  "italic",
+  "underline",
+  "highlightColor",
+  "fontColor",
+]);
+
+function unsupportedFormatTextRangeKeys(args: Record<string, unknown>) {
+  return Object.keys(args).filter(
+    (key) => !FORMAT_TEXT_RANGE_ALLOWED_KEYS.has(key) && key !== "color",
+  );
+}
+
+function summarizeWordFailure(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+  return fallback;
 }
 
 function readParagraphStyle(paragraph: any): string | null {
@@ -963,21 +989,34 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
       const style = getSafeString(args.style);
 
       if (location === "end") {
-        const paragraph = context.document.body.insertParagraph(text, "End");
-        if (style) paragraph.style = style;
-        await context.sync();
-        const paragraphs = await getParagraphs(context);
-        const insertedIndex = Math.max(0, paragraphs.length - 1);
-        return toolSuccess("Inserted a paragraph at the end of the document.", {
-          location,
-          text,
-          style: style ?? null,
-          paragraph: await readParagraphSnapshot(
-            context,
-            insertedIndex,
-            paragraphs[insertedIndex],
-          ),
-        });
+        try {
+          const paragraph = context.document.body.insertParagraph(text, "End");
+          if (style) paragraph.style = style;
+          await context.sync();
+          const paragraphs = await getParagraphs(context);
+          const insertedIndex = Math.max(0, paragraphs.length - 1);
+          return toolSuccess("Inserted a paragraph at the end of the document.", {
+            location,
+            text,
+            style: style ?? null,
+            paragraph: await readParagraphSnapshot(
+              context,
+              insertedIndex,
+              paragraphs[insertedIndex],
+            ),
+          });
+        } catch (error) {
+          return toolError(
+            style
+              ? `Inserted paragraph text could not be styled with "${style}". Make sure the style exists in this document.`
+              : "Word could not insert the requested paragraph.",
+            {
+              cause: summarizeWordFailure(error, "Word rejected the paragraph insertion."),
+              location,
+              style: style ?? null,
+            },
+          );
+        }
       }
 
       const paragraphIndex = getSafeNumber(args.paragraphIndex);
@@ -985,24 +1024,44 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
         return toolError("paragraphIndex is required when location is before or after.");
       }
 
-      const { paragraph } = await getParagraphByIndex(context, paragraphIndex);
-      const inserted = paragraph.insertParagraph(text, location === "before" ? "Before" : "After");
-      if (style) inserted.style = style;
-      await context.sync();
-      const insertedIndex = paragraphIndex + (location === "before" ? 0 : 1);
-      return toolSuccess(`Inserted a paragraph ${location} paragraph ${paragraphIndex}.`, {
-        location,
-        paragraphIndex,
-        text,
-        style: style ?? null,
-        paragraph: await readParagraphSnapshot(context, insertedIndex, inserted),
-      });
+      try {
+        const { paragraph } = await getParagraphByIndex(context, paragraphIndex);
+        const inserted = paragraph.insertParagraph(
+          text,
+          location === "before" ? "Before" : "After",
+        );
+        if (style) inserted.style = style;
+        await context.sync();
+        const insertedIndex = paragraphIndex + (location === "before" ? 0 : 1);
+        return toolSuccess(`Inserted a paragraph ${location} paragraph ${paragraphIndex}.`, {
+          location,
+          paragraphIndex,
+          text,
+          style: style ?? null,
+          paragraph: await readParagraphSnapshot(context, insertedIndex, inserted),
+        });
+      } catch (error) {
+        return toolError(
+          style
+            ? `Inserted paragraph text could not be styled with "${style}". Make sure the style exists in this document.`
+            : `Word could not insert a paragraph ${location} paragraph ${paragraphIndex}.`,
+          {
+            cause: summarizeWordFailure(error, "Word rejected the paragraph insertion."),
+            location,
+            paragraphIndex,
+            style: style ?? null,
+          },
+        );
+      }
     });
   },
 
   async word_insert_text(args) {
     return runWordTool(async (context) => {
-      const text = typeof args.text === "string" ? args.text : "";
+      const text = getSafeString(args.text);
+      if (!text) {
+        return toolError("text is required.");
+      }
       const target = getSafeString(args.target) ?? "selection";
       const paragraphIndex = getSafeNumber(args.paragraphIndex);
       let affectedParagraph: Record<string, unknown> | null = null;
@@ -1018,11 +1077,17 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
             paragraphs[paragraphs.length - 1],
           );
         }
-      } else if (target === "selection") {
+      } else if (target === "selection" || target === "cursor") {
         const selection = context.document.getSelection();
+        selection.load("text");
         const selectionParagraphs = selection.paragraphs;
         selectionParagraphs.load("items");
         await context.sync();
+        if (target === "selection" && !getSelectionText(selection)) {
+          return toolError(
+            "There is no active text selection to insert into. Use target=\"cursor\" to insert at the caret.",
+          );
+        }
         selection.insertText(text, "End");
         await context.sync();
         if (selectionParagraphs.items[0]) {
@@ -1311,13 +1376,24 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
       if (paragraphIndex == null || !style) {
         return toolError("paragraphIndex and style are required.");
       }
-      const { paragraph } = await getParagraphByIndex(context, paragraphIndex);
-      paragraph.style = style;
-      await context.sync();
-      return toolSuccess(`Applied style ${style} to paragraph ${paragraphIndex}.`, {
-        paragraph: await readParagraphSnapshot(context, paragraphIndex, paragraph),
-        style,
-      });
+      try {
+        const { paragraph } = await getParagraphByIndex(context, paragraphIndex);
+        paragraph.style = style;
+        await context.sync();
+        return toolSuccess(`Applied style ${style} to paragraph ${paragraphIndex}.`, {
+          paragraph: await readParagraphSnapshot(context, paragraphIndex, paragraph),
+          style,
+        });
+      } catch (error) {
+        return toolError(
+          `Style "${style}" could not be applied. Make sure the style exists in this document and retry.`,
+          {
+            cause: summarizeWordFailure(error, "Word rejected the requested style."),
+            style,
+            paragraphIndex,
+          },
+        );
+      }
     });
   },
 
@@ -1427,27 +1503,57 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
       const values = Array.isArray(args.values) ? (args.values as string[][]) : undefined;
       const location = getSafeString(args.location) ?? "end";
       if (location === "end") {
-        context.document.body.insertTable(rows, columns, "End", values);
-        await context.sync();
-        return toolSuccess("Inserted a table at the end of the document.", {
-          rows,
-          columns,
-          location,
-        });
+        try {
+          context.document.body.insertTable(rows, columns, "End", values);
+          await context.sync();
+          return toolSuccess("Inserted a table at the end of the document.", {
+            rows,
+            columns,
+            location,
+          });
+        } catch (error) {
+          return toolError(
+            `Word rejected a table with ${rows} row(s) and ${columns} column(s). Reduce the requested dimensions and retry.`,
+            {
+              cause: summarizeWordFailure(error, "Word rejected the requested table dimensions."),
+              rows,
+              columns,
+              location,
+            },
+          );
+        }
       }
       const paragraphIndex = getSafeNumber(args.paragraphIndex);
       if (paragraphIndex == null) {
         return toolError("paragraphIndex is required when location is before or after.");
       }
-      const { paragraph } = await getParagraphByIndex(context, paragraphIndex);
-      paragraph.insertTable(rows, columns, location === "before" ? "Before" : "After", values);
-      await context.sync();
-      return toolSuccess(`Inserted a table ${location} paragraph ${paragraphIndex}.`, {
-        rows,
-        columns,
-        location,
-        paragraphIndex,
-      });
+      try {
+        const { paragraph } = await getParagraphByIndex(context, paragraphIndex);
+        paragraph.insertTable(
+          rows,
+          columns,
+          location === "before" ? "Before" : "After",
+          values,
+        );
+        await context.sync();
+        return toolSuccess(`Inserted a table ${location} paragraph ${paragraphIndex}.`, {
+          rows,
+          columns,
+          location,
+          paragraphIndex,
+        });
+      } catch (error) {
+        return toolError(
+          `Word rejected a table with ${rows} row(s) and ${columns} column(s). Reduce the requested dimensions and retry.`,
+          {
+            cause: summarizeWordFailure(error, "Word rejected the requested table dimensions."),
+            rows,
+            columns,
+            location,
+            paragraphIndex,
+          },
+        );
+      }
     });
   },
 
@@ -1668,19 +1774,37 @@ const WORD_TOOL_EXECUTORS: Record<string, WordToolExecutor> = {
 
   async word_accept_all_revisions() {
     return runWordTool(async (context) => {
-      const changes = context.document.body.getTrackedChanges();
-      changes.acceptAll();
+      const changes = await resolveTrackedChanges(context);
+      const revisionCount = changes.length;
+      context.document.body.getTrackedChanges().acceptAll();
       await context.sync();
-      return toolSuccess("Accepted all revisions.", {});
+      return toolSuccess(
+        revisionCount > 0
+          ? `Accepted ${revisionCount} tracked revision${revisionCount === 1 ? "" : "s"}.`
+          : "There were no tracked revisions to accept.",
+        {
+          revisionCount,
+          changed: revisionCount > 0,
+        },
+      );
     });
   },
 
   async word_reject_all_revisions() {
     return runWordTool(async (context) => {
-      const changes = context.document.body.getTrackedChanges();
-      changes.rejectAll();
+      const changes = await resolveTrackedChanges(context);
+      const revisionCount = changes.length;
+      context.document.body.getTrackedChanges().rejectAll();
       await context.sync();
-      return toolSuccess("Rejected all revisions.", {});
+      return toolSuccess(
+        revisionCount > 0
+          ? `Rejected ${revisionCount} tracked revision${revisionCount === 1 ? "" : "s"}.`
+          : "There were no tracked revisions to reject.",
+        {
+          revisionCount,
+          changed: revisionCount > 0,
+        },
+      );
     });
   },
 };
@@ -1699,7 +1823,16 @@ export function createWordBridgeTools(): ExecutableWordTool[] {
       requiredCapability: contract.requiredCapability,
       execute: async (_toolCallId, args) => {
         try {
-          const parsedArgs = contract.inputSchema.safeParse(asObject(args));
+          const rawArgs = normalizeWordToolArgs(contract.name, asObject(args));
+          if (contract.name === "word_format_text_range") {
+            const unsupportedKeys = unsupportedFormatTextRangeKeys(rawArgs);
+            if (unsupportedKeys.length > 0) {
+              return toolError(
+                `Unsupported inline formatting fields: ${unsupportedKeys.join(", ")}. Supported fields: bold, italic, underline, highlightColor, fontColor.`,
+              );
+            }
+          }
+          const parsedArgs = contract.inputSchema.safeParse(rawArgs);
           if (!parsedArgs.success) {
             return toolError(parsedArgs.error.message);
           }

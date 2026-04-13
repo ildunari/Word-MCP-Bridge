@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   buildBridgeStatusSummary,
   bridgeToolExecutionResultToMcpResult,
   compactBridgeSessionRecord,
+  createOfficeBridgeMcpServer,
   describeBridgeConnectionFailure,
   describeMissingBridgeSession,
 } from "../src/mcp";
@@ -401,5 +404,131 @@ describe("bridgeToolExecutionResultToMcpResult", () => {
     });
     expect((compact.snapshot as Record<string, unknown>).tools).toBeUndefined();
     expect(JSON.stringify(compact)).not.toContain("Very long tool description");
+  });
+
+  it("advertises direct Word tool schemas with real parameters through MCP tools/list", async () => {
+    const server = await createOfficeBridgeMcpServer({
+      baseUrl: "https://localhost:4017",
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({
+      name: "mcp-schema-test",
+      version: "0.0.0",
+    });
+
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    try {
+      const { tools } = await client.listTools();
+      const searchTool = tools.find((tool) => tool.name === "word_search_text");
+      const formatTool = tools.find((tool) => tool.name === "word_format_text_range");
+      const insertParagraphTool = tools.find(
+        (tool) => tool.name === "word_insert_paragraph",
+      );
+      const bridgeStatusTool = tools.find((tool) => tool.name === "get_bridge_status");
+
+      expect(searchTool?.inputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          session: { type: "string" },
+          query: { type: "string" },
+          matchCase: { type: "boolean" },
+          wholeWord: { type: "boolean" },
+          maxMatches: { type: "integer" },
+        },
+        required: ["query"],
+      });
+      expect(formatTool?.inputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          target: { type: "string" },
+          paragraphIndex: { type: "integer" },
+          startOffset: { type: "integer" },
+          endOffset: { type: "integer" },
+          bold: { type: "boolean" },
+          italic: { type: "boolean" },
+          underline: { type: "boolean" },
+          highlightColor: { anyOf: expect.any(Array) },
+          fontColor: { type: "string" },
+        },
+      });
+      expect(insertParagraphTool?.inputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          location: { type: "string" },
+          paragraphIndex: { type: "integer" },
+          style: { type: "string" },
+        },
+        required: ["text"],
+      });
+      expect(bridgeStatusTool?.inputSchema).toMatchObject({
+        type: "object",
+        properties: {
+          verbose: { type: "boolean" },
+        },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("normalizes compatibility aliases before MCP input validation", async () => {
+    const server = await createOfficeBridgeMcpServer({
+      baseUrl: "https://localhost:4017",
+    });
+    const validateToolInput = (server as unknown as {
+      validateToolInput: (
+        tool: unknown,
+        args: unknown,
+        toolName: string,
+      ) => Promise<Record<string, unknown>>;
+      _registeredTools: Record<string, unknown>;
+      close: () => Promise<void>;
+    }).validateToolInput.bind(server);
+    const registeredTools = (server as unknown as {
+      _registeredTools: Record<string, unknown>;
+    })._registeredTools;
+
+    try {
+      await expect(
+        validateToolInput(
+          registeredTools.word_search_text,
+          { searchText: "alpha" },
+          "word_search_text",
+        ),
+      ).resolves.toMatchObject({
+        query: "alpha",
+      });
+      await expect(
+        validateToolInput(
+          registeredTools.word_reply_to_comment,
+          {
+            commentId: 1110707823,
+            text: "reply",
+          },
+          "word_reply_to_comment",
+        ),
+      ).resolves.toMatchObject({
+        commentId: "1110707823",
+        text: "reply",
+      });
+      await expect(
+        validateToolInput(
+          registeredTools.word_format_text_range,
+          {
+            color: "#336699",
+            bold: true,
+          },
+          "word_format_text_range",
+        ),
+      ).resolves.toMatchObject({
+        fontColor: "#336699",
+        bold: true,
+      });
+    } finally {
+      await server.close();
+    }
   });
 });

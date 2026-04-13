@@ -91,6 +91,8 @@ Focused live smoke check from the repo:
 pnpm bridge:smoke
 ```
 
+The MCP server now exposes the full direct Word tool surface with parameterized schemas in `tools/list`. `call_bridge_tool` is still available as a compatibility fallback, but hosts should no longer need it just to discover Word tool arguments.
+
 ## MCP host setup
 
 The examples below assume the bridge server is already running locally at `https://localhost:4017`.
@@ -207,5 +209,6 @@ office-bridge mcp-serve --url https://localhost:4017
 
 - Local bridge TLS is intentionally localhost-oriented.
 - `mcp-serve` wraps the live bridge; it does not replace `serve`.
+- `get_bridge_status` is intentionally compact by default. Pass `verbose: true` only when you need the full server snapshot for debugging.
 - The Word add-in is distributed separately from this package.
 - If a long-lived MCP host still shows the older verbose `list_sessions` payload after an update, restart that host's `office-bridge mcp-serve` process so it reconnects to the current bridge code.

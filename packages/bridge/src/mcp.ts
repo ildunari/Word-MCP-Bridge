@@ -14,6 +14,8 @@ import {
 } from "./session-labels.js";
 import {
   getFirstClassWordToolContracts,
+  getWordToolInputShape,
+  normalizeWordToolArgs,
   type WordToolContract,
 } from "./word-tool-contracts.js";
 import { z } from "zod";
@@ -281,6 +283,36 @@ export async function createOfficeBridgeMcpServer(
         "Use this server to inspect live Office bridge sessions, read Word live context, execute bridge tools, and optionally run privileged Office.js actions when the target session allows them.",
     },
   );
+  const mutableServer = server as unknown as {
+    validateToolInput: (
+      tool: unknown,
+      args: unknown,
+      toolName: string,
+    ) => Promise<unknown>;
+  };
+  const originalValidateToolInput = mutableServer.validateToolInput.bind(server);
+  mutableServer.validateToolInput = async (tool, args, toolName) => {
+    if (!toolName.startsWith("word_")) {
+      return originalValidateToolInput(tool, args, toolName);
+    }
+    const normalizedArgs = normalizeWordToolArgs(toolName, args);
+    const validatedArgs = await originalValidateToolInput(
+      tool,
+      normalizedArgs,
+      toolName,
+    );
+    if (
+      validatedArgs &&
+      typeof validatedArgs === "object" &&
+      !Array.isArray(validatedArgs)
+    ) {
+      return {
+        ...normalizedArgs,
+        ...validatedArgs,
+      };
+    }
+    return validatedArgs;
+  };
 
   async function bridgeRequest<T>(
     method: string,
@@ -405,13 +437,25 @@ export async function createOfficeBridgeMcpServer(
     {
       description:
         "Check whether the local Word MCP Bridge server is reachable, even when no Office sessions are connected yet.",
+      inputSchema: z.object({
+        verbose: z.boolean().optional(),
+      }),
     },
-    async () => {
+    async ({ verbose }) => {
       const status = (await fetchBridgeStatus()) as BridgeServerStatus;
-      return buildJsonResult({
-        status,
-        summary: buildBridgeStatusSummary(status),
-      });
+      const summary = buildBridgeStatusSummary(status);
+      return buildJsonResult(
+        verbose
+          ? {
+              ok: true,
+              summary,
+              status,
+            }
+          : {
+              ok: true,
+              summary,
+            },
+      );
     },
   );
 
@@ -671,11 +715,10 @@ export async function createOfficeBridgeMcpServer(
       tool.name,
       {
         description: tool.description,
-        inputSchema: z
-          .object({
-            session: z.string().optional(),
-          })
-          .and(tool.inputSchema),
+        inputSchema: {
+          session: z.string().optional(),
+          ...getWordToolInputShape(tool),
+        },
       },
       async (input) => {
         const { session, ...args } = input as Record<string, unknown> & {

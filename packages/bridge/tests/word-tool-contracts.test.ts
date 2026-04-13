@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getFirstClassWordToolContracts,
   getWordToolContract,
+  normalizeWordToolArgs,
   WORD_TOOL_CONTRACTS,
 } from "../src/word-tool-contracts";
 
@@ -15,12 +16,12 @@ describe("word tool contracts", () => {
     const firstClass = getFirstClassWordToolContracts().map((tool) => tool.name);
     expect(firstClass).toContain("word_get_document_text");
     expect(firstClass).toContain("word_get_text_range");
+    expect(firstClass).toContain("word_insert_paragraph");
     expect(firstClass).toContain("word_replace_text_range");
     expect(firstClass).toContain("word_format_text_range");
     expect(firstClass).toContain("word_get_revision_scope");
     expect(firstClass).toContain("word_delete_comment");
     expect(firstClass).toContain("word_reopen_comment");
-    expect(firstClass).not.toContain("word_insert_paragraph");
   });
 
   it("keeps write and review tools on the document_edit capability", () => {
@@ -77,6 +78,69 @@ describe("word tool contracts", () => {
       }).success,
     ).toBe(false);
     expect(schema?.safeParse({}).success).toBe(false);
+  });
+
+  it("accepts the additive cursor insert target while rejecting empty text", () => {
+    const schema = getWordToolContract("word_insert_text")?.inputSchema;
+
+    expect(
+      schema?.safeParse({
+        text: "Hello",
+        target: "cursor",
+      }).success,
+    ).toBe(true);
+    expect(
+      schema?.safeParse({
+        text: "",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("normalizes intuitive compatibility aliases to canonical Word tool inputs", () => {
+    expect(
+      normalizeWordToolArgs("word_search_text", {
+        searchText: "alpha",
+      }),
+    ).toMatchObject({
+      query: "alpha",
+    });
+    expect(
+      normalizeWordToolArgs("word_search_and_replace", {
+        searchText: "alpha",
+        replaceText: "beta",
+      }),
+    ).toMatchObject({
+      query: "alpha",
+      replacement: "beta",
+    });
+    expect(
+      normalizeWordToolArgs("word_replace_text_range", {
+        replacement: "delta",
+      }),
+    ).toMatchObject({
+      text: "delta",
+    });
+    expect(
+      normalizeWordToolArgs("word_apply_style", {
+        styleName: "Heading 1",
+      }),
+    ).toMatchObject({
+      style: "Heading 1",
+    });
+    expect(
+      normalizeWordToolArgs("word_reply_to_comment", {
+        commentId: 1110707823,
+      }),
+    ).toMatchObject({
+      commentId: "1110707823",
+    });
+    expect(
+      normalizeWordToolArgs("word_format_text_range", {
+        color: "#336699",
+      }),
+    ).toMatchObject({
+      fontColor: "#336699",
+    });
   });
 
   it("describes targetMatchIndexes as integer array items in search-and-replace metadata", () => {

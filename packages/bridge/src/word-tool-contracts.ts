@@ -17,6 +17,8 @@ export interface WordToolContract {
   parameters: Record<string, unknown>;
 }
 
+type WordToolArgRecord = Record<string, unknown>;
+
 function schema(shape: Record<string, z.ZodTypeAny>) {
   return z.object(shape);
 }
@@ -35,6 +37,12 @@ function parameters(
 
 function defineWordToolContract(contract: WordToolContract): WordToolContract {
   return contract;
+}
+
+function asArgRecord(value: unknown): WordToolArgRecord {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as WordToolArgRecord) }
+    : {};
 }
 
 const paragraphRangeSchema = schema({
@@ -265,7 +273,7 @@ export const WORD_TOOL_CONTRACTS: WordToolContract[] = [
       "Insert a paragraph at the end of the document or before/after a specific paragraph.",
     group: "write",
     requiredCapability: "document_edit",
-    firstClassMcp: false,
+    firstClassMcp: true,
     inputSchema: schema({
       text: z.string().min(1),
       location: z.enum(["end", "before", "after"]).optional(),
@@ -306,9 +314,9 @@ export const WORD_TOOL_CONTRACTS: WordToolContract[] = [
     requiredCapability: "document_edit",
     firstClassMcp: true,
     inputSchema: schema({
-      text: z.string(),
+      text: z.string().min(1),
       target: z
-        .enum(["selection", "documentEnd", "paragraphStart", "paragraphEnd"])
+        .enum(["selection", "cursor", "documentEnd", "paragraphStart", "paragraphEnd"])
         .optional(),
       paragraphIndex: z.number().int().min(0).optional(),
     }),
@@ -320,8 +328,15 @@ export const WORD_TOOL_CONTRACTS: WordToolContract[] = [
         },
         target: {
           type: "string",
-          enum: ["selection", "documentEnd", "paragraphStart", "paragraphEnd"],
-          description: "Insertion target. Defaults to selection.",
+          enum: [
+            "selection",
+            "cursor",
+            "documentEnd",
+            "paragraphStart",
+            "paragraphEnd",
+          ],
+          description:
+            "Insertion target. selection requires highlighted text, cursor uses the active caret, and defaults to selection.",
         },
         paragraphIndex: {
           type: "integer",
@@ -958,4 +973,59 @@ export function getWordToolContract(name: string): WordToolContract | undefined 
 
 export function getFirstClassWordToolContracts(): WordToolContract[] {
   return WORD_TOOL_CONTRACTS.filter((contract) => contract.firstClassMcp);
+}
+
+export function getWordToolInputShape(
+  contract: WordToolContract,
+): Record<string, z.ZodTypeAny> {
+  const candidate = contract.inputSchema as z.ZodTypeAny & {
+    shape?: Record<string, z.ZodTypeAny>;
+  };
+  return candidate.shape ? { ...candidate.shape } : {};
+}
+
+export function normalizeWordToolArgs(
+  toolName: string,
+  value: unknown,
+): WordToolArgRecord {
+  const args = asArgRecord(value);
+
+  const copyStringAlias = (from: string, to: string) => {
+    if (args[to] == null && typeof args[from] === "string" && args[from].trim()) {
+      args[to] = args[from];
+    }
+  };
+
+  if (toolName === "word_search_text" || toolName === "word_search_and_replace") {
+    copyStringAlias("searchText", "query");
+  }
+
+  if (toolName === "word_search_and_replace") {
+    copyStringAlias("replaceText", "replacement");
+  }
+
+  if (toolName === "word_replace_text_range") {
+    copyStringAlias("replacement", "text");
+  }
+
+  if (toolName === "word_apply_style" || toolName === "word_insert_paragraph") {
+    copyStringAlias("styleName", "style");
+  }
+
+  if (
+    toolName === "word_reply_to_comment" ||
+    toolName === "word_resolve_comment" ||
+    toolName === "word_delete_comment" ||
+    toolName === "word_reopen_comment"
+  ) {
+    if (args.commentId != null && typeof args.commentId === "number") {
+      args.commentId = String(args.commentId);
+    }
+  }
+
+  if (toolName === "word_format_text_range") {
+    copyStringAlias("color", "fontColor");
+  }
+
+  return args;
 }

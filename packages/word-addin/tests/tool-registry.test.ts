@@ -45,6 +45,19 @@ describe("Word bridge tool registry", () => {
     });
   });
 
+  it("rejects empty text inserts before Office.js execution", async () => {
+    const tools = createWordBridgeTools();
+    const tool = tools.find((candidate) => candidate.name === "word_insert_text");
+
+    const result = await tool?.execute("tool-empty", {
+      text: "",
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+    });
+  });
+
   it("rejects empty formatting mutations before Office.js execution", async () => {
     const tools = createWordBridgeTools();
     const tool = tools.find((candidate) => candidate.name === "word_format_text_range");
@@ -71,6 +84,20 @@ describe("Word bridge tool registry", () => {
 
     expect(result).toMatchObject({
       success: false,
+    });
+  });
+
+  it("reports unsupported inline formatting fields before Office.js execution", async () => {
+    const tools = createWordBridgeTools();
+    const tool = tools.find((candidate) => candidate.name === "word_format_text_range");
+
+    const result = await tool?.execute("tool-unsupported-format", {
+      font: "Aptos",
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("Unsupported inline formatting fields"),
     });
   });
 
