@@ -1,0 +1,5 @@
+# Local-only Claude state — do not sync via git
+settings.local.json
+.session-*
+worktrees/
+plans/
